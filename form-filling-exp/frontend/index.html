@@ -183,6 +183,44 @@
             height: 16px;
         }
         
+        /* Mode Selector */
+        .mode-selector {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        
+        .mode-label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+        
+        .radio-label {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            cursor: pointer;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            padding: 0.4rem 0.8rem;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            border: 1px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .radio-label:has(input:checked) {
+            border-color: var(--accent);
+            color: var(--text-primary);
+        }
+        
+        .radio-label input {
+            accent-color: var(--accent);
+            width: 14px;
+            height: 14px;
+        }
+        
         /* Buttons */
         .actions {
             display: flex;
@@ -348,6 +386,135 @@
         .toast.success { border-left: 3px solid var(--success); }
         .toast.error { border-left: 3px solid var(--error); }
         
+        /* Streaming Log */
+        .stream-log {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            max-height: 400px;
+            overflow-y: auto;
+            padding: 0.5rem;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+        }
+        
+        .stream-item {
+            padding: 0.4rem 0.6rem;
+            margin-bottom: 0.25rem;
+            border-radius: 4px;
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            animation: fadeIn 0.2s ease-out;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .stream-icon {
+            flex-shrink: 0;
+        }
+        
+        .stream-iteration {
+            color: var(--warning);
+            font-weight: 500;
+            margin-top: 0.5rem;
+        }
+        
+        .stream-text {
+            color: var(--text-secondary);
+            background: var(--bg-secondary);
+        }
+        
+        .stream-tool-start {
+            color: var(--accent);
+        }
+        
+        .stream-tool-start .tool-name {
+            font-weight: 600;
+        }
+        
+        .stream-tool-end {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            padding-left: 1.5rem;
+        }
+        
+        .stream-complete {
+            color: var(--success);
+            font-weight: 500;
+        }
+        
+        .stream-summary {
+            color: var(--success);
+            background: rgba(34, 197, 94, 0.1);
+            font-weight: 500;
+        }
+        
+        .stream-error {
+            color: var(--error);
+            background: rgba(239, 68, 68, 0.1);
+        }
+        
+        .stream-init {
+            color: var(--accent);
+        }
+        
+        .stream-status {
+            color: var(--text-secondary);
+        }
+        
+        .stream-tool {
+            color: var(--text);
+            background: rgba(99, 102, 241, 0.08);
+        }
+        
+        .stream-tool-parallel {
+            color: var(--text);
+            background: rgba(99, 102, 241, 0.12);
+            padding: 0.6rem 0.8rem;
+        }
+        
+        .stream-tool-parallel strong {
+            color: var(--accent);
+        }
+        
+        .stream-tool-parallel .tool-list {
+            margin: 0.3rem 0 0 1rem;
+            padding: 0;
+            list-style: none;
+        }
+        
+        .stream-tool-parallel .tool-list li {
+            padding: 0.15rem 0;
+            color: var(--text-secondary);
+            font-size: 0.9em;
+        }
+        
+        .stream-tool-parallel .tool-list li::before {
+            content: "→ ";
+            color: var(--accent);
+        }
+        
+        .stream-result {
+            color: var(--success);
+            font-size: 0.9em;
+            padding-left: 1.5rem;
+        }
+        
+        .stream-thinking {
+            color: var(--text-muted);
+            font-style: italic;
+            font-size: 0.9em;
+        }
+        
+        .stream-success {
+            color: var(--success);
+            font-weight: 600;
+            background: rgba(34, 197, 94, 0.15);
+        }
+        
         /* Footer */
         footer {
             margin-top: 3rem;
@@ -396,16 +563,30 @@
 • Fill in my address: 123 Main Street, San Francisco, CA 94102"
             ></textarea>
             <div class="options">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="use-llm" checked>
-                    Use AI (requires ANTHROPIC_API_KEY)
-                </label>
+                <div class="mode-selector">
+                    <span class="mode-label">Mode:</span>
+                    <label class="radio-label">
+                        <input type="radio" name="mode" value="single-shot" checked>
+                        Single-shot
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="mode" value="agent">
+                        Agent (with tools)
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="mode" value="simple">
+                        Simple (no AI)
+                    </label>
+                </div>
             </div>
         </div>
         
         <div class="actions">
             <button class="btn-secondary" id="analyze-btn" disabled>
                 Analyze Fields
+            </button>
+            <button class="btn-secondary" id="preview-btn" disabled>
+                Preview
             </button>
             <button class="btn-primary" id="fill-btn" disabled>
                 Fill & Download
@@ -435,8 +616,8 @@
         const fileInput = document.getElementById('file-input');
         const fileName = document.getElementById('file-name');
         const instructions = document.getElementById('instructions');
-        const useLlm = document.getElementById('use-llm');
         const analyzeBtn = document.getElementById('analyze-btn');
+        const previewBtn = document.getElementById('preview-btn');
         const fillBtn = document.getElementById('fill-btn');
         const results = document.getElementById('results');
         const status = document.getElementById('status');
@@ -444,6 +625,11 @@
         const toast = document.getElementById('toast');
         
         let currentFile = null;
+        
+        // Get selected mode
+        function getMode() {
+            return document.querySelector('input[name="mode"]:checked').value;
+        }
         
         // File upload handling
         uploadZone.addEventListener('click', () => fileInput.click());
@@ -481,6 +667,7 @@
         
         function updateButtons() {
             analyzeBtn.disabled = !currentFile;
+            previewBtn.disabled = !currentFile || !instructions.value.trim();
             fillBtn.disabled = !currentFile || !instructions.value.trim();
         }
         
@@ -520,9 +707,69 @@
             analyzeBtn.disabled = false;
         });
         
+        // Preview
+        previewBtn.addEventListener('click', async () => {
+            if (!currentFile || !instructions.value.trim()) return;
+            
+            const mode = getMode();
+            previewBtn.disabled = true;
+            setStatus('loading', mode === 'agent' ? 'Running agent preview...' : 'Previewing...');
+            results.classList.add('visible');
+            
+            const formData = new FormData();
+            formData.append('file', currentFile);
+            formData.append('instructions', instructions.value);
+            
+            // Choose endpoint based on mode
+            let endpoint = '/fill-preview';
+            if (mode === 'agent') {
+                endpoint = '/fill-agent-preview';
+            } else if (mode === 'simple') {
+                formData.append('use_llm', false);
+            } else {
+                formData.append('use_llm', true);
+            }
+            
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    setStatus('success', data.message);
+                    if (mode === 'agent') {
+                        renderAgentLog(data);
+                    } else {
+                        renderFieldsWithEdits(data.fields, data.edits);
+                    }
+                } else {
+                    setStatus('error', data.detail || data.error || data.message || 'Failed');
+                    if (data.execution_log) {
+                        renderAgentLog(data);
+                    }
+                }
+            } catch (err) {
+                setStatus('error', 'Connection error');
+                console.error(err);
+            }
+            
+            previewBtn.disabled = false;
+        });
+        
         // Fill PDF
         fillBtn.addEventListener('click', async () => {
             if (!currentFile || !instructions.value.trim()) return;
+            
+            const mode = getMode();
+            
+            // Use streaming for agent mode
+            if (mode === 'agent') {
+                await fillWithAgentStream();
+                return;
+            }
             
             fillBtn.disabled = true;
             fillBtn.textContent = 'Processing...';
@@ -530,10 +777,17 @@
             const formData = new FormData();
             formData.append('file', currentFile);
             formData.append('instructions', instructions.value);
-            formData.append('use_llm', useLlm.checked);
+            
+            // Choose endpoint based on mode
+            let endpoint = '/fill';
+            if (mode === 'simple') {
+                formData.append('use_llm', false);
+            } else {
+                formData.append('use_llm', true);
+            }
             
             try {
-                const response = await fetch('/fill', {
+                const response = await fetch(endpoint, {
                     method: 'POST',
                     body: formData
                 });
@@ -562,35 +816,194 @@
             fillBtn.textContent = 'Fill & Download';
         });
         
-        // Preview (Analyze + show what would be filled)
-        async function previewFill() {
-            if (!currentFile || !instructions.value.trim()) return;
-            
-            setStatus('loading', 'Previewing...');
+        // Agent streaming mode
+        async function fillWithAgentStream() {
+            fillBtn.disabled = true;
+            fillBtn.textContent = 'Agent running...';
             results.classList.add('visible');
+            setStatus('loading', 'Starting agent...');
+            fieldsList.innerHTML = '<div id="stream-log" class="stream-log"></div>';
+            
+            const streamLog = document.getElementById('stream-log');
+            let pdfHex = null;
+            let appliedEdits = {};
+            let filledCount = 0;
             
             const formData = new FormData();
             formData.append('file', currentFile);
             formData.append('instructions', instructions.value);
-            formData.append('use_llm', useLlm.checked);
             
             try {
-                const response = await fetch('/fill-preview', {
+                const response = await fetch('/fill-agent-stream', {
                     method: 'POST',
                     body: formData
                 });
                 
-                const data = await response.json();
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
                 
-                if (response.ok && data.success) {
-                    setStatus('success', data.message);
-                    renderFieldsWithEdits(data.fields, data.edits);
-                } else {
-                    setStatus('error', data.detail || data.message || 'Failed');
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    
+                    // Process complete SSE messages
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const jsonStr = line.slice(6);
+                            if (jsonStr.trim()) {
+                                try {
+                                    const msg = JSON.parse(jsonStr);
+                                    handleStreamMessage(msg, streamLog);
+                                    
+                                    // Capture PDF and edits count
+                                    if (msg.type === 'summary') {
+                                        appliedEdits = msg.applied_edits || {};
+                                        filledCount = msg.applied_count || Object.keys(appliedEdits).length;
+                                    }
+                                    if (msg.type === 'complete') {
+                                        filledCount = msg.applied_count || filledCount;
+                                    }
+                                    if (msg.type === 'pdf_ready') {
+                                        pdfHex = msg.pdf_bytes;
+                                    }
+                                    if (msg.pdf_bytes) {
+                                        pdfHex = msg.pdf_bytes;
+                                    }
+                                } catch (e) {
+                                    console.error('Failed to parse SSE:', e);
+                                }
+                            }
+                        }
+                    }
                 }
+                
+                // Download the PDF if we got it
+                if (pdfHex) {
+                    const bytes = new Uint8Array(pdfHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+                    const blob = new Blob([bytes], { type: 'application/pdf' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = currentFile.name.replace('.pdf', '_agent_filled.pdf');
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    
+                    const count = filledCount || Object.keys(appliedEdits).length;
+                    setStatus('success', `Filled ${count} fields`);
+                    showToast(`Downloaded! ${count} fields filled.`, 'success');
+                } else {
+                    setStatus('error', 'No PDF returned');
+                }
+                
             } catch (err) {
                 setStatus('error', 'Connection error');
+                console.error(err);
             }
+            
+            fillBtn.disabled = false;
+            fillBtn.textContent = 'Fill & Download';
+        }
+        
+        function handleStreamMessage(msg, container) {
+            const div = document.createElement('div');
+            div.className = 'stream-item';
+            
+            switch (msg.type) {
+                case 'init':
+                    div.innerHTML = `<span class="stream-icon">🚀</span> ${escapeHtml(msg.message || 'Connected')}`;
+                    div.className += ' stream-init';
+                    setStatus('loading', msg.message || 'Connected');
+                    break;
+                    
+                case 'status':
+                    div.innerHTML = `<span class="stream-icon">⏳</span> ${escapeHtml(msg.message || '')}`;
+                    div.className += ' stream-status';
+                    setStatus('loading', msg.message || 'Processing...');
+                    break;
+                
+                case 'tool_use':
+                    // Show user-friendly tool descriptions
+                    if (msg.friendly && msg.friendly.length > 0) {
+                        // Helper to format field descriptions (convert **bold** to <strong>)
+                        const formatField = (text) => {
+                            return escapeHtml(text).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+                        };
+                        
+                        // Multiple parallel tool calls
+                        if (msg.friendly.length > 1) {
+                            const actions = msg.friendly.map(f => `<li>${formatField(f)}</li>`).join('');
+                            div.innerHTML = `<span class="stream-icon">⚡</span> <strong>Filling ${msg.friendly.length} fields:</strong><ul class="tool-list">${actions}</ul>`;
+                            div.className += ' stream-tool-parallel';
+                            setStatus('loading', `Filling ${msg.friendly.length} fields...`);
+                        } else {
+                            div.innerHTML = `<span class="stream-icon">✏️</span> ${formatField(msg.friendly[0])}`;
+                            div.className += ' stream-tool';
+                            // Clean status (no markdown)
+                            setStatus('loading', msg.friendly[0].replace(/\*\*/g, ''));
+                        }
+                    } else if (msg.tool_calls && msg.tool_calls.length > 0) {
+                        // Fallback to tool names
+                        const toolNames = msg.tool_calls.map(t => t.friendly || t.name.replace('mcp__forms__', '')).join(', ');
+                        div.innerHTML = `<span class="stream-icon">🔧</span> ${escapeHtml(toolNames)}`;
+                        div.className += ' stream-tool';
+                    } else {
+                        return; // Skip empty tool_use messages
+                    }
+                    break;
+                
+                case 'user':
+                    // Tool results - show friendly version if available
+                    if (msg.friendly) {
+                        div.innerHTML = `<span class="stream-icon">✓</span> ${escapeHtml(msg.friendly)}`;
+                        div.className += ' stream-result';
+                        setStatus('loading', msg.friendly);
+                    } else {
+                        return; // Skip raw tool results
+                    }
+                    break;
+                
+                case 'assistant':
+                    // Assistant thinking/text
+                    if (msg.text) {
+                        // Show a brief preview of what the agent is thinking
+                        const preview = msg.text.slice(0, 150);
+                        div.innerHTML = `<span class="stream-icon">💭</span> ${escapeHtml(preview)}${msg.text.length > 150 ? '...' : ''}`;
+                        div.className += ' stream-thinking';
+                    } else {
+                        return; // Skip empty assistant messages
+                    }
+                    break;
+                    
+                case 'complete':
+                    const count = msg.applied_count || 0;
+                    div.innerHTML = `<span class="stream-icon">✅</span> <strong>Done!</strong> Filled ${count} field${count !== 1 ? 's' : ''}`;
+                    div.className += ' stream-complete';
+                    setStatus('loading', 'Preparing download...');
+                    break;
+                    
+                case 'pdf_ready':
+                    div.innerHTML = `<span class="stream-icon">📄</span> Form filled successfully!`;
+                    div.className += ' stream-success';
+                    break;
+                    
+                case 'error':
+                    div.innerHTML = `<span class="stream-icon">❌</span> Error: ${escapeHtml(msg.error)}`;
+                    div.className += ' stream-error';
+                    setStatus('error', msg.error);
+                    break;
+                    
+                default:
+                    return; // Don't add unknown message types
+            }
+            
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
         }
         
         function setStatus(type, text) {
@@ -643,6 +1056,52 @@
                     </div>
                 `;
             }).join('');
+        }
+        
+        function renderAgentLog(data) {
+            let html = '';
+            
+            // Show applied edits
+            if (data.applied_edits && Object.keys(data.applied_edits).length > 0) {
+                html += '<div style="margin-bottom: 1rem;"><strong>Applied Edits:</strong></div>';
+                for (const [field, value] of Object.entries(data.applied_edits)) {
+                    html += `
+                        <div class="field-item" style="border-left: 3px solid var(--success);">
+                            <span class="field-id">${field}</span>
+                            <span style="color: var(--success); margin-left: 0.5rem;">→ ${escapeHtml(String(value))}</span>
+                        </div>
+                    `;
+                }
+            }
+            
+            // Show execution log
+            if (data.execution_log && data.execution_log.length > 0) {
+                html += '<div style="margin: 1rem 0;"><strong>Agent Execution Log:</strong></div>';
+                html += '<div style="font-family: JetBrains Mono, monospace; font-size: 0.8rem; max-height: 300px; overflow-y: auto;">';
+                
+                for (const entry of data.execution_log) {
+                    if (entry.event === 'tool_start') {
+                        html += `<div style="color: var(--accent);">→ ${entry.tool}(${JSON.stringify(entry.args).slice(0, 50)})</div>`;
+                    } else if (entry.event === 'tool_end') {
+                        const result = entry.result.slice(0, 100);
+                        html += `<div style="color: var(--text-muted); margin-bottom: 0.5rem;">  ← ${result}${entry.result.length > 100 ? '...' : ''}</div>`;
+                    } else if (entry.event === 'iteration') {
+                        html += `<div style="color: var(--warning); margin-top: 0.5rem;">[Step ${entry.iteration}] ${entry.thinking.slice(0, 80)}...</div>`;
+                    }
+                }
+                
+                html += '</div>';
+            }
+            
+            // Show errors
+            if (data.errors && data.errors.length > 0) {
+                html += '<div style="margin-top: 1rem; color: var(--error);"><strong>Errors:</strong></div>';
+                for (const err of data.errors) {
+                    html += `<div style="color: var(--error);">• ${escapeHtml(err)}</div>`;
+                }
+            }
+            
+            fieldsList.innerHTML = html || '<p style="color: var(--text-muted);">No results</p>';
         }
         
         function showToast(message, type) {
