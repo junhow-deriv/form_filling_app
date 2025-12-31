@@ -76,7 +76,7 @@ export default function FormFields({ fields }: FormFieldsProps) {
             </div>
 
             <p className="text-xs text-foreground-secondary line-clamp-2">
-              {field.label_context || 'No context'}
+              {field.friendly_label || field.label_context || 'No label'}
             </p>
 
             {field.options && field.options.length > 0 && (

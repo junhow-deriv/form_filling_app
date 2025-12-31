@@ -86,6 +86,7 @@ class FieldInfo(BaseModel):
     field_type: str
     page: int
     label_context: str
+    friendly_label: Optional[str] = None
     current_value: Optional[str] = None
     options: Optional[list[str]] = None
 
@@ -142,6 +143,7 @@ async def analyze_pdf(file: UploadFile = File(...)):
             field_type=f.field_type.value,
             page=f.page,
             label_context=f.label_context,
+            friendly_label=f.friendly_label,
             current_value=f.current_value,
             options=f.options
         )

@@ -105,6 +105,10 @@ def detect_form_fields(pdf_bytes: bytes, generate_friendly_labels: bool = True) 
     if generate_friendly_labels and fields:
         fields = _generate_friendly_labels(fields)
 
+    # print(f"Detected {len(fields)} fields")
+    # print(fields)
+    # raise Exception("Stop here")
+
     return fields
 
 

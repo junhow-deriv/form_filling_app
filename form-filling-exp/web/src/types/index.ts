@@ -4,6 +4,7 @@ export interface FormField {
   field_type: 'text' | 'checkbox' | 'dropdown' | 'radio';
   page: number;
   label_context: string;
+  friendly_label?: string | null;
   current_value?: string | null;
   options?: string[] | null;
 }
