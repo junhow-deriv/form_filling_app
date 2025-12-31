@@ -964,11 +964,15 @@ def _get_field_label(field_id: str) -> str:
     if not field:
         return None
 
-    # Use the native field name if available (cleanest option)
+    # Use the LLM-generated friendly label first (cleanest option)
+    if field.friendly_label:
+        return field.friendly_label
+
+    # Fallback: format the native field name
     if field.native_field_name:
         return _format_field_name(field.native_field_name)
 
-    # Fallback: extract from field_id (format: page0_fieldname)
+    # Last resort: extract from field_id (format: page0_fieldname)
     if "_" in field_id:
         raw_name = field_id.split("_", 1)[1]
         return _format_field_name(raw_name)
