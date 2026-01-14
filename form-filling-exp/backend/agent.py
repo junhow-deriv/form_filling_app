@@ -1154,9 +1154,6 @@ async def run_agent_stream(
         for cf in all_context_files:
             filename = cf.get("filename", "unknown") if isinstance(cf, dict) else getattr(cf, "filename", "unknown")
             content = cf.get("content", "") if isinstance(cf, dict) else getattr(cf, "content", "")
-            # Truncate very long content to avoid exceeding context limits
-            if len(content) > 50000:
-                content = content[:50000] + "\n\n[... content truncated ...]"
             context_parts.append(f"### {filename}\n{content}")
         context_section = f"""
 ## Reference Documents
