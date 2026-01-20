@@ -652,6 +652,21 @@ if AGENT_SDK_AVAILABLE:
 
         print(f"[commit_edits] Saving to: {output_path}")
 
+        if session.doc.is_pdf:
+            catalog_xref = session.doc.pdf_catalog()
+            acroform_info = session.doc.xref_get_key(catalog_xref, "AcroForm")
+            
+            if acroform_info[0] == "dict":
+                acro_dict = acroform_info[1]
+                if "/NeedAppearances true" not in acro_dict:
+                    if "/NeedAppearances false" in acro_dict:
+                        new_dict = acro_dict.replace("/NeedAppearances false", "/NeedAppearances true")
+                    else:
+                        new_dict = acro_dict.strip().rstrip(">") + " /NeedAppearances true >>"
+                    session.doc.xref_set_key(catalog_xref, "AcroForm", new_dict)
+            else:
+                session.doc.xref_set_key(catalog_xref, "AcroForm", "<< /NeedAppearances true >>")
+
         applied = []
         errors = []
 
@@ -677,7 +692,13 @@ if AGENT_SDK_AVAILABLE:
                                 # Use a single space as workaround for "clearing" fields
                                 print(f"[commit_edits] Clearing field {field_id} (was: {widget.field_value})")
                                 widget.field_value = " "
-                        widget.update()
+                        
+                        try:
+                            widget.need_appearances = True
+                            widget.update()
+                        except AttributeError:
+                            widget.update()
+                        
                         applied.append({"field_id": field_id, "value": value})
                         session.applied_edits[field_id] = value
                         print(f"[commit_edits] Applied: {field_id} = {value}")
@@ -688,7 +709,13 @@ if AGENT_SDK_AVAILABLE:
 
         # Save
         try:
-            session.doc.save(output_path)
+            session.doc.save(
+                output_path,
+                clean=True,
+                deflate=True,
+                garbage=3,
+                expand=255
+            )
             print(f"[commit_edits] Saved successfully to: {output_path}")
 
             # Store the filled PDF bytes for multi-turn
