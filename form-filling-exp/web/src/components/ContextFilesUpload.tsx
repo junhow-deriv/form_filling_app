@@ -99,7 +99,7 @@ export default function ContextFilesUpload({
 
   return (
     <div className="space-y-3">
-      {/* Header with toggle */}
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <svg className="w-4 h-4 text-foreground-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -108,20 +108,6 @@ export default function ContextFilesUpload({
           <span className="text-xs font-medium text-foreground-secondary">
             Context Files ({totalCount}/{maxFiles})
           </span>
-        </div>
-
-        {/* Parse mode toggle */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-foreground-muted">Mode:</span>
-          <select
-            value={parseMode}
-            onChange={(e) => setParseMode(e.target.value as 'cost_effective' | 'agentic_plus')}
-            disabled={disabled || isUploading}
-            className="text-xs px-2 py-1 rounded bg-background-tertiary border border-border text-foreground disabled:opacity-50"
-          >
-            <option value="cost_effective">Cost Effective</option>
-            <option value="agentic_plus">Agentic Plus</option>
-          </select>
         </div>
       </div>
 

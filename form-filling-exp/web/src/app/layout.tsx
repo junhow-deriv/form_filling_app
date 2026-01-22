@@ -9,8 +9,8 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Form Filler by LlamaIndex",
-  description: "AI-powered PDF form completion by LlamaIndex",
+  title: "Form Filler",
+  description: "AI-powered PDF form completion",
 };
 
 export default function RootLayout({
