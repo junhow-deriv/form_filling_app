@@ -35,6 +35,12 @@ from parser import (
     LLAMAPARSE_AVAILABLE, LLAMAPARSE_ERROR, ParsedFile,
     estimate_file_chars
 )
+from services.query_generator import generate_field_queries
+from services.embedding_service import (
+    store_document,
+    waterfall_search,
+    assemble_waterfall_context
+)
 
 
 # ============================================================================
@@ -62,12 +68,17 @@ app = FastAPI(
 import asyncio
 
 async def periodic_session_cleanup():
-    """Run session cleanup every hour."""
+    """
+    Run form state cleanup every hour.
+    
+    Note: pg_cron handles automatic cleanup, but this provides a fallback
+    and cleans up in-memory sessions.
+    """
     while True:
         await asyncio.sleep(3600)  # 1 hour
         try:
-            # Clean up sessions older than 24 hours
-            _session_manager.cleanup_old_sessions(max_age_seconds=86400)
+            # Clean up form states older than 24 hours (pg_cron also does this)
+            _session_manager.cleanup_old_form_states(max_age_seconds=86400)
         except Exception as e:
             print(f"[Cleanup] Error during periodic cleanup: {e}")
 
@@ -76,7 +87,8 @@ async def periodic_session_cleanup():
 async def startup_event():
     """Start background tasks on app startup."""
     asyncio.create_task(periodic_session_cleanup())
-    print("[App] Started periodic session cleanup task (every 1 hour, cleaning sessions older than 24 hours)")
+    print("[App] Started periodic form state cleanup task (every 1 hour, cleaning states older than 24 hours)")
+    print("[App] Note: pg_cron also handles automatic cleanup in the database")
 
 # Allow CORS for local development
 app.add_middleware(
@@ -86,6 +98,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+async def check_user_has_documents(user_id: str, session_id: str) -> bool:
+    """
+    Check if user has any documents (ephemeral or global KB).
+    
+    Returns True if:
+    - User has ephemeral docs for this session_id, OR
+    - User has documents in global knowledge base
+    
+    Args:
+        user_id: User UUID
+        session_id: Session UUID for ephemeral docs
+        
+    Returns:
+        True if user has any documents, False otherwise
+    """
+    from database.supabase_client import get_client_for_user
+    
+    try:
+        client = get_client_for_user(user_id)
+        
+        # Check ephemeral docs for this session
+        ephemeral = client.table("documents").select("id").eq("user_id", user_id).eq("session_id", session_id).limit(1).execute()
+        if ephemeral.data:
+            print(f"[HasDocs] User {user_id} has ephemeral docs for session {session_id}")
+            return True
+        
+        # Check global KB (session_id IS NULL)
+        kb_docs = client.table("documents").select("id").eq("user_id", user_id).is_("session_id", "null").limit(1).execute()
+        if kb_docs.data:
+            print(f"[HasDocs] User {user_id} has global KB documents")
+            return True
+        
+        print(f"[HasDocs] User {user_id} has no documents")
+        return False
+    except Exception as e:
+        print(f"[HasDocs] Error checking documents: {e}")
+        return False
 
 
 # ============================================================================
@@ -461,6 +516,7 @@ import asyncio
 async def fill_pdf_agent_stream(
     file: UploadFile = File(...),
     instructions: str = Form(...),
+    context_files: Optional[list[UploadFile]] = File(None),  # Optional context file uploads
     max_iterations: int = Form(20),
     is_continuation: bool = Form(False),
     previous_edits: Optional[str] = Form(None),  # JSON string of field_id -> value
@@ -476,6 +532,7 @@ async def fill_pdf_agent_stream(
     Args:
         file: The PDF file to fill. For continuations, this should be the already-filled PDF.
         instructions: Natural language instructions for this turn
+        context_files: Optional context files to parse and embed (creates ephemeral embeddings)
         is_continuation: Set to true for multi-turn conversations (subsequent messages)
         previous_edits: JSON string of {field_id: value} from previous turns
         resume_session_id: Session ID from previous turn to resume conversation context
@@ -537,7 +594,72 @@ async def fill_pdf_agent_stream(
 
             output_path = tmp_path.replace('.pdf', '_filled.pdf')
 
-            yield f"data: {json.dumps({'type': 'status', 'message': f'PDF saved, starting Claude Agent SDK...'})}\n\n"
+            # Use default test user for development (TODO: get from auth)
+            user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
+
+            # PRE-AGENT PROCESSING: Context generation
+            intelligent_context = None
+            
+            if not is_continuation:
+                # 1. Handle context file uploads (if provided)
+                uploaded_doc_ids = []
+                if context_files:
+                    yield f"data: {json.dumps({'type': 'status', 'message': f'Processing {len(context_files)} context file(s)...'})}\n\n"
+                    for cf in context_files:
+                        try:
+                            cf_bytes = await cf.read()
+                            doc_id = await store_document(
+                                user_id=user_id,
+                                filename=cf.filename,
+                                file_bytes=cf_bytes,
+                                session_id=user_session_id,  # Tag as ephemeral
+                                metadata={"source": "form_context_upload"}
+                            )
+                            uploaded_doc_ids.append(doc_id)
+                            print(f"[FillAgentStream] Uploaded context file: {cf.filename} -> {doc_id}")
+                        except Exception as e:
+                            print(f"[FillAgentStream] Error uploading context file {cf.filename}: {e}")
+                            yield f"data: {json.dumps({'type': 'warning', 'message': f'Failed to process {cf.filename}: {str(e)}'})}\n\n"
+                
+                # 2. Detect form fields BEFORE starting agent
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Detecting form fields...'})}\n\n"
+                fields = detect_form_fields(pdf_bytes)
+                print(f"[FillAgentStream] Detected {len(fields)} form fields")
+                
+                # 3. Check if user has any documents (ephemeral or KB)
+                has_documents = await check_user_has_documents(user_id, user_session_id or "temp-session")
+                
+                # 4. Generate intelligent context if documents exist
+                if has_documents:
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'Generating search queries for form fields...'})}\n\n"
+                    
+                    # Generate queries
+                    field_queries = await generate_field_queries(
+                        form_fields=fields,
+                        user_instructions=instructions,
+                        anthropic_api_key=anthropic_api_key,
+                        has_uploaded_docs=len(uploaded_doc_ids) > 0
+                    )
+                    
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents for relevant information...'})}\n\n"
+                    
+                    # Perform waterfall search
+                    waterfall_results = await waterfall_search(
+                        user_id=user_id,
+                        session_id=user_session_id or "temp-session",
+                        field_queries=field_queries,
+                        similarity_threshold=0.7
+                    )
+                    
+                    # Assemble context
+                    intelligent_context = assemble_waterfall_context(waterfall_results)
+                    
+                    if intelligent_context:
+                        print(f"[FillAgentStream] Generated intelligent context ({len(intelligent_context)} chars)")
+                    else:
+                        print(f"[FillAgentStream] No relevant context found from documents")
+
+            yield f"data: {json.dumps({'type': 'status', 'message': f'Starting Claude Agent SDK...'})}\n\n"
 
             # Stream messages from Claude Agent SDK with continuation params
             # Pass original PDF bytes only for new sessions (not continuations)
@@ -551,6 +673,7 @@ async def fill_pdf_agent_stream(
                 resume_session_id=resume_session_id,
                 user_session_id=user_session_id,
                 original_pdf_bytes=pdf_bytes if not is_continuation else None,
+                intelligent_context=intelligent_context,
                 anthropic_api_key=anthropic_api_key,
             ):
                 message_count += 1
@@ -628,31 +751,32 @@ async def health_check():
 @app.post("/parse-files")
 async def parse_context_files(
     files: list[UploadFile] = File(...),
-    parse_mode: str = Form("cost_effective"),
     user_session_id: Optional[str] = Form(None),
-    api_key: str = Form(...),
+    is_ephemeral: bool = Form(True),
 ):
     """
-    Parse uploaded context files using LlamaParse (for complex files) or direct read (for simple text).
+    Upload and process context files with extraction, chunking, and embedding.
+
+    Ephemeral uploads (is_ephemeral=True):
+    - Tagged with session_id for waterfall retrieval
+    - Auto-cleanup after 24 hours via pg_cron
+    - Used for uploaded context files specific to a form-filling session
+
+    Persistent uploads (is_ephemeral=False):
+    - Added to global knowledge base (session_id=NULL)
+    - Never auto-deleted
+    - Used for permanent reference documents
 
     Streams progress updates via SSE.
 
     Args:
-        files: Up to 5 files to parse
-        parse_mode: "cost_effective" or "agentic_plus"
-        user_session_id: Optional session ID to associate parsed files with
-        api_key: LlamaCloud API key (required)
+        files: Up to 10 files to upload
+        user_session_id: Session ID for ephemeral tagging (required if is_ephemeral=True)
+        is_ephemeral: True = ephemeral (auto-cleanup), False = global KB
 
     Returns:
         SSE stream with progress updates and final results
     """
-    # Validate API key
-    if not api_key or not api_key.strip():
-        raise HTTPException(status_code=400, detail="API key is required")
-
-    api_key = api_key.strip()
-    if not api_key.startswith("llx-"):
-        raise HTTPException(status_code=400, detail="Invalid API key format")
 
     # Validate file count
     if len(files) > 10:
@@ -661,96 +785,56 @@ async def parse_context_files(
     if len(files) == 0:
         raise HTTPException(status_code=400, detail="At least one file is required")
 
-    # Validate parse mode
-    if parse_mode not in ("cost_effective", "agentic_plus"):
-        raise HTTPException(status_code=400, detail="Invalid parse_mode. Use 'cost_effective' or 'agentic_plus'")
-
-    # Check if LlamaParse is available for files that need it
-    files_needing_parse = [f for f in files if needs_parsing(f.filename or "")]
-    if files_needing_parse and not LLAMAPARSE_AVAILABLE:
-        raise HTTPException(
-            status_code=503,
-            detail=f"LlamaParse not available: {LLAMAPARSE_ERROR}. Cannot parse: {[f.filename for f in files_needing_parse]}"
-        )
-
     # Read all file bytes
     file_data = []
     for f in files:
         content = await f.read()
         file_data.append((content, f.filename or "unknown"))
 
-    # Pre-validation: estimate token usage before expensive LlamaParse calls
-    # Use 80% threshold to be conservative (LlamaParse often extracts more than raw extraction)
-    PRE_VALIDATION_THRESHOLD = int(MAX_CONTEXT_CHARS * 0.8)
-
-    estimated_chars = 0
-    file_estimates = []
-    for file_bytes, filename in file_data:
-        est = estimate_file_chars(file_bytes, filename)
-        estimated_chars += est
-        file_estimates.append((filename, est))
-
-    estimated_tokens = estimated_chars // CHARS_PER_TOKEN
-
-    if estimated_chars > PRE_VALIDATION_THRESHOLD:
-        # Sort by size to show largest files first
-        file_estimates.sort(key=lambda x: x[1], reverse=True)
-        largest_files = ", ".join(f"{name} (~{chars//CHARS_PER_TOKEN:,} tokens)"
-                                  for name, chars in file_estimates[:3])
-
-        async def rejection_stream():
-            yield f"data: {json.dumps({'type': 'error', 'error': f'Files likely exceed token limit before parsing. Estimated ~{estimated_tokens:,} tokens, limit is {MAX_CONTEXT_TOKENS:,} tokens. Largest files: {largest_files}. Please upload fewer or smaller files.'})}\n\n"
-
-        return StreamingResponse(
-            rejection_stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-        )
-
-    print(f"[Parse] Pre-validation passed: ~{estimated_tokens:,} estimated tokens for {len(file_data)} files")
-
     async def event_stream():
-        yield f"data: {json.dumps({'type': 'init', 'message': f'Starting to parse {len(file_data)} file(s) (~{estimated_tokens:,} estimated tokens)...'})}\n\n"
+        yield f"data: {json.dumps({'type': 'init', 'message': f'Processing {len(file_data)} file(s)...'})}\n\n"
 
         try:
-            async for event in parse_files_stream(file_data, parse_mode, api_key=api_key):
-                # If this is the complete event, validate token budget before storing
-                if event.get("type") == "complete":
-                    results = event.get("results", [])
+            results = []
+            # Use default test user (TODO: get from auth)
+            test_user_id = "00000000-0000-0000-0000-000000000001"
+            session_id_to_use = user_session_id if is_ephemeral else None
 
-                    # Validate total token usage before storing
-                    total_chars = sum(
-                        len(r.get("content", ""))
-                        for r in results
-                        if r.get("content")
+            for idx, (file_bytes, filename) in enumerate(file_data):
+                yield f"data: {json.dumps({'type': 'progress', 'current': idx + 1, 'total': len(file_data), 'filename': filename, 'status': 'processing'})}\n\n"
+                
+                try:
+                    # Use the new extraction/chunking/embedding flow
+                    doc_id = await store_document(
+                        user_id=test_user_id,
+                        filename=filename,
+                        file_bytes=file_bytes,
+                        session_id=session_id_to_use,
+                        metadata={"source": "parse_files_upload"}
                     )
-                    final_tokens = total_chars // CHARS_PER_TOKEN
+                    
+                    results.append({
+                        "filename": filename,
+                        "document_id": doc_id,
+                        "success": True
+                    })
+                    
+                    yield f"data: {json.dumps({'type': 'progress', 'current': idx + 1, 'total': len(file_data), 'filename': filename, 'status': 'complete', 'document_id': doc_id})}\n\n"
+                    
+                except Exception as e:
+                    results.append({
+                        "filename": filename,
+                        "success": False,
+                        "error": str(e)
+                    })
+                    yield f"data: {json.dumps({'type': 'error', 'filename': filename, 'error': str(e)})}\n\n"
 
-                    if total_chars > MAX_CONTEXT_CHARS:
-                        yield f"data: {json.dumps({'type': 'error', 'error': f'Total content exceeds token limit. Estimated {final_tokens:,} tokens ({total_chars:,} chars), max is {MAX_CONTEXT_TOKENS:,} tokens ({MAX_CONTEXT_CHARS:,} chars). Please upload fewer or smaller files.'})}\n\n"
-                        return
-
-                    # Store in session if validation passed
-                    if user_session_id:
-                        session = _session_manager.get_or_create_session(user_session_id)
-                        if session:
-                            parsed_files = []
-                            for result in results:
-                                if result.get("content"):
-                                    parsed_files.append(ParsedFile(
-                                        filename=result["filename"],
-                                        content=result["content"],
-                                        was_parsed=result.get("parsed", False)
-                                    ))
-                            session.context_files = parsed_files
-                            _session_manager._save_session_to_db(session)
-                            print(f"[Parse] Stored {len(parsed_files)} context files ({final_tokens:,} tokens) in session {user_session_id}")
-
-                    # Add token info to the complete event
-                    event["estimated_tokens"] = final_tokens
-                    event["max_tokens"] = MAX_CONTEXT_TOKENS
-
-                yield f"data: {json.dumps(event)}\n\n"
+            # Final event
+            storage_type = "ephemeral (auto-cleanup: 24h)" if is_ephemeral else "global knowledge base"
+            success_count = sum(1 for r in results if r.get("success"))
+            yield f"data: {json.dumps({'type': 'complete', 'results': results, 'count': len(results), 'success_count': success_count, 'storage_type': storage_type})}\n\n"
+            
+            print(f"[ParseFiles] Stored {success_count}/{len(results)} documents in {storage_type}")
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
