@@ -12,7 +12,7 @@ export interface ParseProgress {
   current: number;
   total: number;
   filename: string;
-  status: 'parsing' | 'reading_text' | 'llamaparse' | 'complete' | 'error';
+  status: 'parsing' | 'reading_text' | 'docling' | 'complete' | 'error';
   error?: string;
 }
 
@@ -201,7 +201,7 @@ export default function ContextFilesUpload({
         <div className="px-3 py-2 rounded-lg bg-accent/10 text-accent">
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs">
-              {parseProgress.status === 'llamaparse' ? 'Parsing with LlamaParse' :
+              {parseProgress.status === 'docling' ? 'Parsing with Docling' :
                parseProgress.status === 'reading_text' ? 'Reading text file' :
                parseProgress.status === 'complete' ? 'Complete' :
                parseProgress.status === 'error' ? 'Error' : 'Processing'}

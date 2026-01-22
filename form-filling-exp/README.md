@@ -249,3 +249,7 @@ npm run build
 ## License
 
 MIT
+
+
+## Env
+- File should be placed in 'backend' folder

@@ -6,23 +6,6 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 // API Key Validation
 // ============================================================================
 
-export async function validateApiKey(apiKey: string): Promise<{ valid: boolean; message: string }> {
-  const formData = new FormData();
-  formData.append('api_key', apiKey);
-
-  const response = await fetch(`${API_BASE}/validate-api-key`, {
-    method: 'POST',
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Failed to validate API key' }));
-    throw new Error(error.detail || 'Failed to validate API key');
-  }
-
-  return response.json();
-}
-
 export async function validateAnthropicApiKey(apiKey: string): Promise<{ valid: boolean; message: string }> {
   const formData = new FormData();
   formData.append('api_key', apiKey);
@@ -242,7 +225,7 @@ export interface ParseFilesProgress {
   total?: number;
   current?: number;
   filename?: string;
-  status?: 'parsing' | 'reading_text' | 'llamaparse' | 'complete' | 'error';
+  status?: 'parsing' | 'reading_text' | 'docling' | 'complete' | 'error';
   error?: string;
   message?: string;
   results?: Array<{
@@ -258,7 +241,6 @@ export interface ParseFilesProgress {
 export async function* streamParseFiles(
   files: File[],
   parseMode: 'cost_effective' | 'agentic_plus',
-  apiKey: string,
   userSessionId?: string | null
 ): AsyncGenerator<ParseFilesProgress> {
   const formData = new FormData();
@@ -267,7 +249,6 @@ export async function* streamParseFiles(
     formData.append('files', file);
   }
   formData.append('parse_mode', parseMode);
-  formData.append('api_key', apiKey);
 
   if (userSessionId) {
     formData.append('user_session_id', userSessionId);
@@ -280,7 +261,11 @@ export async function* streamParseFiles(
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Failed to parse files' }));
-    throw new Error(error.detail || 'Failed to parse files');
+    // Handle case where detail is an object/array (e.g. validation error)
+    const errorMessage = typeof error.detail === 'string' 
+      ? error.detail 
+      : JSON.stringify(error.detail) || 'Failed to parse files';
+    throw new Error(errorMessage);
   }
 
   const reader = response.body?.getReader();
@@ -317,8 +302,8 @@ export async function* streamParseFiles(
 }
 
 export async function getParseStatus(): Promise<{
-  llamaparse_available: boolean;
-  llamaparse_error: string | null;
+  docling_available: boolean;
+  docling_error: string | null;
 }> {
   const response = await fetch(`${API_BASE}/parse-status`);
   if (!response.ok) {
