@@ -1,5 +1,5 @@
 """
-File parsing module using LlamaParse.
+File parsing module using Docling.
 
 Provides functionality to parse various file types (PDF, PPTX, DOCX, images)
 into markdown format for use as context in the form-filling agent.
@@ -8,9 +8,9 @@ into markdown format for use as context in the form-filling agent.
 import asyncio
 import os
 from pathlib import Path
-from typing import AsyncGenerator, Literal
+from typing import AsyncGenerator, Literal, Optional
 
-# Maximum concurrent LlamaParse requests (within rate limits)
+# Maximum concurrent parsing requests
 MAX_CONCURRENT_PARSE = 5
 
 # File extensions that don't need parsing (already text-based)
@@ -19,32 +19,33 @@ SIMPLE_TEXT_EXTENSIONS = {
     '.py', '.js', '.ts', '.jsx', '.tsx', '.css', '.scss', '.yaml', '.yml',
     '.toml', '.ini', '.cfg', '.conf', '.sh', '.bash', '.zsh', '.sql',
     '.r', '.rb', '.go', '.java', '.c', '.cpp', '.h', '.hpp', '.rs',
+    '.adoc', '.asciidoc', '.vtt', '.xhtml',
 }
 
-# File extensions that need LlamaParse
+# File extensions that need Docling
 PARSEABLE_EXTENSIONS = {
     '.pdf', '.pptx', '.ppt', '.docx', '.doc', '.xlsx', '.xls',
     '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp',
 }
 
-# Parse mode options
+# Parse mode options (kept for compatibility, though Docling handles this differently)
 ParseMode = Literal["cost_effective", "agentic_plus"]
 
-# Try to import LlamaParse
-LLAMAPARSE_AVAILABLE = False
-LLAMAPARSE_ERROR = None
+# Try to import Docling
+DOCLING_AVAILABLE = False
+DOCLING_ERROR = None
 
 try:
-    from llama_cloud_services import LlamaParse
-    LLAMAPARSE_AVAILABLE = True
+    from docling.document_converter import DocumentConverter
+    DOCLING_AVAILABLE = True
 except ImportError as e:
-    LLAMAPARSE_ERROR = str(e)
-    print(f"[Parser] LlamaParse not available: {e}")
-    print("[Parser] Install with: pip install llama-cloud-services")
+    DOCLING_ERROR = str(e)
+    print(f"[Parser] Docling not available: {e}")
+    print("[Parser] Install with: pip install docling")
 
 
 def needs_parsing(filename: str) -> bool:
-    """Check if a file needs to be parsed with LlamaParse."""
+    """Check if a file needs to be parsed with Docling."""
     ext = Path(filename).suffix.lower()
     return ext in PARSEABLE_EXTENSIONS
 
@@ -59,7 +60,7 @@ def estimate_file_chars(file_bytes: bytes, filename: str) -> int:
     """
     Quickly estimate the character count of a file's text content.
 
-    This is used for pre-validation before expensive LlamaParse calls.
+    This is used for pre-validation before expensive parsing calls.
     The estimate is intentionally conservative (may overestimate) to avoid
     wasting time on files that will be rejected anyway.
 
@@ -94,7 +95,7 @@ def estimate_file_chars(file_bytes: bytes, filename: str) -> int:
                 text = page.get_text()
                 total_chars += len(text)
             doc.close()
-            # Add 20% buffer since LlamaParse often extracts more (tables, etc.)
+            # Add 20% buffer since parsing often extracts more (tables, etc.)
             return int(total_chars * 1.2)
         except Exception as e:
             print(f"[Estimate] PDF extraction failed for {filename}: {e}")
@@ -147,51 +148,20 @@ def estimate_file_chars(file_bytes: bytes, filename: str) -> int:
     return len(file_bytes) // 4
 
 
-def get_parser(mode: ParseMode = "cost_effective", api_key: str | None = None) -> "LlamaParse":
-    """
-    Get a LlamaParse instance with the specified mode.
-
-    Args:
-        mode: "cost_effective" or "agentic_plus"
-        api_key: LlamaCloud API key (if not provided, uses LLAMA_CLOUD_API_KEY env var)
-
-    Returns:
-        LlamaParse instance configured for the mode
-    """
-    if not LLAMAPARSE_AVAILABLE:
-        raise RuntimeError(f"LlamaParse not available: {LLAMAPARSE_ERROR}")
-
-    common_args = {
-        "tier": mode,  # "cost_effective" or "agentic_plus"
-        "version": "latest",
-        "high_res_ocr": True,
-        "adaptive_long_table": True,
-        "outlined_table_extraction": True,
-        "output_tables_as_HTML": True,
-        "precise_bounding_box": True,
-    }
-
-    # Add API key if provided (otherwise LlamaParse uses env var)
-    if api_key:
-        common_args["api_key"] = api_key
-
-    return LlamaParse(**common_args)
-
-
 async def parse_file(
     file_bytes: bytes,
     filename: str,
     mode: ParseMode = "cost_effective",
-    api_key: str | None = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """
-    Parse a file and return its markdown content.
+    Parse a file and return its markdown content using Docling.
 
     Args:
         file_bytes: The file content as bytes
-        filename: The original filename (needed for LlamaParse)
-        mode: The parsing mode to use
-        api_key: LlamaCloud API key (if not provided, uses env var)
+        filename: The original filename
+        mode: The parsing mode (ignored for Docling, kept for compatibility)
+        api_key: API key (ignored for Docling, kept for compatibility)
 
     Returns:
         Markdown string of the parsed content
@@ -211,29 +181,23 @@ async def parse_file(
     if not needs_parsing(filename):
         return f"[Unsupported file type: {ext}]"
 
-    # Use LlamaParse
-    if not LLAMAPARSE_AVAILABLE:
-        raise RuntimeError(f"LlamaParse not available: {LLAMAPARSE_ERROR}")
+    # Use Docling
+    if not DOCLING_AVAILABLE:
+        raise RuntimeError(f"Docling not available: {DOCLING_ERROR}")
 
-    parser = get_parser(mode, api_key=api_key)
-
-    # Write bytes to temp file (LlamaParse API takes file paths)
+    # Write bytes to temp file (Docling takes file paths)
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
 
     try:
-        # Parse the file
-        result = await parser.aparse(tmp_path)
+        # Run Docling in a thread since it's synchronous/CPU-bound
+        def _run_docling():
+            converter = DocumentConverter()
+            result = converter.convert(tmp_path)
+            return result.document.export_to_markdown()
 
-        # Get markdown from the result
-        # The result object has pages with .md attribute
-        markdown_parts = []
-        for page in result.pages:
-            if page.md:
-                markdown_parts.append(page.md)
-
-        return "\n\n".join(markdown_parts) if markdown_parts else "[No content extracted]"
+        return await asyncio.to_thread(_run_docling)
     finally:
         # Clean up temp file
         try:
@@ -245,7 +209,7 @@ async def parse_file(
 async def parse_files_stream(
     files: list[tuple[bytes, str]],
     mode: ParseMode = "cost_effective",
-    api_key: str | None = None,
+    api_key: Optional[str] = None,
 ) -> AsyncGenerator[dict, None]:
     """
     Parse multiple files with streaming status updates.
@@ -253,8 +217,8 @@ async def parse_files_stream(
 
     Args:
         files: List of (file_bytes, filename) tuples
-        mode: The parsing mode to use
-        api_key: LlamaCloud API key (if not provided, uses env var)
+        mode: The parsing mode (ignored for Docling)
+        api_key: API key (ignored for Docling)
 
     Yields:
         Status updates and results as dicts
@@ -275,7 +239,7 @@ async def parse_files_stream(
     # Queue for collecting progress events from parallel tasks
     event_queue: asyncio.Queue[dict] = asyncio.Queue()
 
-    # Semaphore to limit concurrent LlamaParse requests
+    # Semaphore to limit concurrent parsing requests
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_PARSE)
 
     # Results storage (index -> result)
@@ -316,13 +280,13 @@ async def parse_files_stream(
                     }
 
                 elif needs_parsing(filename):
-                    # Complex file - use LlamaParse
+                    # Complex file - use Docling
                     await event_queue.put({
                         "type": "progress",
                         "current": index + 1,
                         "total": total,
                         "filename": filename,
-                        "status": "llamaparse"
+                        "status": "docling"
                     })
 
                     content = await parse_file(file_bytes, filename, mode, api_key=api_key)
@@ -413,7 +377,7 @@ class ParsedFile:
         self,
         filename: str,
         content: str,
-        original_bytes: bytes | None = None,
+        original_bytes: Optional[bytes] = None,
         was_parsed: bool = False
     ):
         self.filename = filename

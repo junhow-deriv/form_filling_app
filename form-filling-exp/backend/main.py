@@ -32,7 +32,7 @@ from llm import map_instructions_to_fields
 from agent import run_agent, run_agent_stream, AGENT_SDK_AVAILABLE, AGENT_SDK_ERROR, _session_manager
 from parser import (
     parse_files_stream, needs_parsing, is_simple_text,
-    LLAMAPARSE_AVAILABLE, LLAMAPARSE_ERROR, ParsedFile,
+    DOCLING_AVAILABLE, DOCLING_ERROR, ParsedFile,
     estimate_file_chars
 )
 
@@ -665,12 +665,12 @@ async def parse_context_files(
     if parse_mode not in ("cost_effective", "agentic_plus"):
         raise HTTPException(status_code=400, detail="Invalid parse_mode. Use 'cost_effective' or 'agentic_plus'")
 
-    # Check if LlamaParse is available for files that need it
+    # Check if Docling is available for files that need it
     files_needing_parse = [f for f in files if needs_parsing(f.filename or "")]
-    if files_needing_parse and not LLAMAPARSE_AVAILABLE:
+    if files_needing_parse and not DOCLING_AVAILABLE:
         raise HTTPException(
             status_code=503,
-            detail=f"LlamaParse not available: {LLAMAPARSE_ERROR}. Cannot parse: {[f.filename for f in files_needing_parse]}"
+            detail=f"Docling not available: {DOCLING_ERROR}. Cannot parse: {[f.filename for f in files_needing_parse]}"
         )
 
     # Read all file bytes
@@ -679,8 +679,8 @@ async def parse_context_files(
         content = await f.read()
         file_data.append((content, f.filename or "unknown"))
 
-    # Pre-validation: estimate token usage before expensive LlamaParse calls
-    # Use 80% threshold to be conservative (LlamaParse often extracts more than raw extraction)
+    # Pre-validation: estimate token usage before expensive Docling calls
+    # Use 80% threshold to be conservative (Docling often extracts more than raw extraction)
     PRE_VALIDATION_THRESHOLD = int(MAX_CONTEXT_CHARS * 0.8)
 
     estimated_chars = 0
@@ -742,6 +742,7 @@ async def parse_context_files(
                                         content=result["content"],
                                         was_parsed=result.get("parsed", False)
                                     ))
+                                print(parsed_files)
                             session.context_files = parsed_files
                             _session_manager._save_session_to_db(session)
                             print(f"[Parse] Stored {len(parsed_files)} context files ({final_tokens:,} tokens) in session {user_session_id}")
@@ -767,10 +768,10 @@ async def parse_context_files(
 
 @app.get("/parse-status")
 async def get_parse_status():
-    """Check if LlamaParse is available."""
+    """Check if Docling is available."""
     return {
-        "llamaparse_available": LLAMAPARSE_AVAILABLE,
-        "llamaparse_error": LLAMAPARSE_ERROR if not LLAMAPARSE_AVAILABLE else None,
+        "docling_available": DOCLING_AVAILABLE,
+        "docling_error": DOCLING_ERROR if not DOCLING_AVAILABLE else None,
     }
 
 
@@ -1029,4 +1030,3 @@ if __name__ == "__main__":
     print("="*60 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

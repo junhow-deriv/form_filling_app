@@ -50,6 +50,28 @@ class FieldEdit:
     value: str | bool
 
 
+def set_need_appearances(doc: fitz.Document, value: bool = True):
+    """
+    Set or unset the NeedAppearances flag in the PDF Catalog.
+    
+    Args:
+        doc: The PyMuPDF Document object
+        value: True to enable (force viewer to generate), False to disable (use existing appearances)
+    """
+    try:
+        if doc.is_form_pdf:
+            # Get the AcroForm dictionary
+            xref = doc.pdf_catalog()
+            acroform_xref = doc.xref_get_key(xref, "AcroForm")
+            if acroform_xref != "null":
+                # If AcroForm exists, set NeedAppearances
+                if acroform_xref[0] == "indirect":
+                    acroform_xref = int(acroform_xref[1])
+                    doc.xref_set_key(acroform_xref, "NeedAppearances", "true" if value else "false")
+    except Exception as e:
+        print(f"Warning: Failed to set NeedAppearances: {e}")
+
+
 def detect_form_fields(pdf_bytes: bytes, generate_friendly_labels: bool = True) -> list[DetectedField]:
     """
     Detect all fillable AcroForm fields in the PDF.
@@ -140,6 +162,9 @@ def apply_edits(pdf_bytes: bytes, edits: list[FieldEdit]) -> bytes:
             if field_id in edit_map:
                 edit = edit_map[field_id]
                 _apply_widget_edit(widget, edit.value)
+    
+    # Disable NeedAppearances so viewers use the appearances we generated
+    set_need_appearances(doc, False)
     
     result = doc.tobytes()
     doc.close()
@@ -350,4 +375,3 @@ if __name__ == "__main__":
     else:
         print("Usage: python pdf_processor.py <path_to_pdf>")
         print("\nThis will show all detected form fields in the PDF.")
-
