@@ -7,10 +7,10 @@ This module provides:
 3. Vector similarity search
 
 Placeholder sections (TODO for teammate):
-- Document text extraction (uses parser.py)
 - Document chunking strategy
 
 Implemented sections:
+- Document text extraction (uses parser.py)
 - Embedding generation
 - Vector search
 - Database integration
@@ -21,6 +21,7 @@ from typing import Optional, List
 from openai import AsyncOpenAI
 from database.supabase_client import get_client_for_user, get_supabase_client
 from storage.storage_service import calculate_file_hash
+from parser import parse_file
 
 
 # OpenAI client for embeddings
@@ -29,9 +30,6 @@ _openai_client: Optional[AsyncOpenAI] = None
 # Embedding model configuration
 EMBEDDING_MODEL = "text-embedding-ada-002"  # 1536 dimensions
 EMBEDDING_DIMENSIONS = 1536
-
-# TODO: Import from teammate's extraction module when ready
-# from extraction.document_extractor import extract_text_from_file
 
 
 def get_openai_client() -> AsyncOpenAI:
@@ -99,30 +97,34 @@ async def generate_single_embedding(text: str) -> List[float]:
 
 
 # ============================================================================
-# Document Extraction (TODO - PLACEHOLDER)
+# Document Extraction
 # ============================================================================
 
 async def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
     """
-    Extract text from a file.
+    Extract text from a file using the parser module.
     
-    TODO: This is a placeholder. Your teammate should implement:
-    1. Use parser.py for LlamaParse integration
-    2. Handle different file types (PDF, DOCX, PPTX, images)
-    3. Use OCR for images if needed
-    4. Return clean, formatted text
+    This function first checks the file extension:
+    1. If it's a simple text format (txt, md, json, etc.), it decodes and returns the text directly.
+    2. If it's a complex format (PDF, DOCX, PPTX, images), it uses Docling to parse and convert the content into Markdown.
     
     Args:
         file_bytes: File content as bytes
         filename: Original filename (for type detection)
         
     Returns:
-        Extracted text content
+        Extracted text content (raw text or Markdown)
     """
-    # PLACEHOLDER: Return empty string for now
-    # Your teammate will implement this using parser.py
-    print(f"[Extraction] TODO: Extract text from {filename}")
-    return "[Text extraction not yet implemented - to be added by teammate]"
+    print(f"[Extraction] Extracting text from {filename}...")
+    try:
+        # Use the parser module to extract text
+        text = await parse_file(file_bytes, filename)
+        print(f"[Extraction] Successfully extracted {len(text)} chars from {filename}")
+        return text
+    except Exception as e:
+        print(f"[Extraction] Failed to extract text from {filename}: {e}")
+        # Return error message so it's visible in the system that extraction failed
+        return f"[FAILED TO EXTRACT TEXT: {str(e)}]"
 
 
 # ============================================================================
@@ -621,4 +623,3 @@ if __name__ == "__main__":
         print(f"Created {len(chunks)} chunks")
     
     asyncio.run(test())
-
