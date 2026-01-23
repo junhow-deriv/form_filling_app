@@ -17,7 +17,6 @@ Implemented sections:
 """
 
 import os
-import re
 from typing import Optional, List
 from openai import AsyncOpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
