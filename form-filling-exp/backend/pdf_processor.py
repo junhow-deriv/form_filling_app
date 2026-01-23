@@ -147,6 +147,29 @@ def apply_edits(pdf_bytes: bytes, edits: list[FieldEdit]) -> bytes:
     """
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     
+    if doc.is_pdf:
+        catalog_xref = doc.pdf_catalog()
+        acroform_info = doc.xref_get_key(catalog_xref, "AcroForm")
+        
+        if acroform_info[0] == "dict":
+            acro_dict = acroform_info[1]
+            if "/NeedAppearances true" not in acro_dict:
+                if "/NeedAppearances false" in acro_dict:
+                    new_dict = acro_dict.replace("/NeedAppearances false", "/NeedAppearances true")
+                else:
+                    new_dict = acro_dict.strip().rstrip(">") + " /NeedAppearances true >>"
+                doc.xref_set_key(catalog_xref, "AcroForm", new_dict)
+        else:
+            doc.xref_set_key(catalog_xref, "AcroForm", "<< /NeedAppearances true >>")
+        
+        for page in doc:
+            for widget in page.widgets():
+                try:
+                    widget.need_appearances = True
+                    widget.update()
+                except AttributeError:
+                    widget.update()
+
     # Build a lookup of field_id -> edit
     edit_map = {e.field_id: e for e in edits}
     
@@ -166,7 +189,12 @@ def apply_edits(pdf_bytes: bytes, edits: list[FieldEdit]) -> bytes:
     # Disable NeedAppearances so viewers use the appearances we generated
     set_need_appearances(doc, False)
     
-    result = doc.tobytes()
+    result = doc.tobytes(
+        clean=True,
+        deflate=True,
+        garbage=3,
+        expand=255
+    )
     doc.close()
     return result
 

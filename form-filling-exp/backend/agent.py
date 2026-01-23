@@ -116,318 +116,256 @@ class FormFillingSession:
         # Don't clear applied_edits - we want to track cumulative changes
 
 
-import sqlite3
-import time
+from database.supabase_client import get_client_for_user, get_supabase_client
+from storage.storage_service import (
+    upload_session_pdf,
+    download_session_pdf,
+    delete_session_pdf
+)
 from pathlib import Path as PathlibPath
-
-# Database path - stored in backend directory
-_DB_PATH = PathlibPath(__file__).parent / "sessions.db"
-# Directory for storing session PDF files (cheaper than BLOB in SQLite)
-_SESSIONS_DATA_DIR = PathlibPath(__file__).parent / "sessions_data"
 
 
 class SessionManager:
     """
-    Thread-safe manager for multiple concurrent user sessions with SQLite persistence.
+    Thread-safe manager for multiple concurrent user sessions with Supabase persistence.
 
     Sessions are identified by a unique session_id (UUID string).
-    State is persisted to SQLite so sessions survive server restarts.
+    State is persisted to Supabase PostgreSQL so sessions survive server restarts.
+    PDFs are stored in Supabase Storage buckets.
 
     Note: PDF document handles (fitz.Document) are NOT persisted - they are
     re-opened from stored PDF bytes when needed.
     """
-    def __init__(self, db_path: str | PathlibPath | None = None, data_dir: str | PathlibPath | None = None):
+    def __init__(self):
         self._sessions: dict[str, FormFillingSession] = {}
         self._lock = threading.Lock()
-        self._db_path = str(db_path or _DB_PATH)
-        self._data_dir = PathlibPath(data_dir or _SESSIONS_DATA_DIR)
-        self._data_dir.mkdir(parents=True, exist_ok=True)
-        self._init_db()
-        self._load_sessions_from_db()
+        print(f"[SessionManager] Initialized with Supabase backend")
 
-    def _init_db(self):
-        """Initialize the SQLite database schema."""
-        with sqlite3.connect(self._db_path) as conn:
-            # Check if we need to migrate from old schema (with pdf_bytes BLOB)
-            cursor = conn.execute("PRAGMA table_info(sessions)")
-            columns = {row[1] for row in cursor.fetchall()}
-
-            if not columns:
-                # Fresh install - create new schema
-                conn.execute("""
-                    CREATE TABLE sessions (
-                        session_id TEXT PRIMARY KEY,
-                        pdf_path TEXT,
-                        output_path TEXT,
-                        applied_edits TEXT,
-                        pdf_file_path TEXT,
-                        original_pdf_file_path TEXT,
-                        context_files TEXT,
-                        created_at REAL,
-                        updated_at REAL
-                    )
-                """)
-            elif 'pdf_bytes' in columns and 'pdf_file_path' not in columns:
-                # Migration: add pdf_file_path column, migrate data, drop pdf_bytes
-                print("[SessionManager] Migrating database schema...")
-                conn.execute("ALTER TABLE sessions ADD COLUMN pdf_file_path TEXT")
-
-                # Migrate existing BLOB data to files
-                cursor = conn.execute("SELECT session_id, pdf_bytes FROM sessions WHERE pdf_bytes IS NOT NULL")
-                for row in cursor.fetchall():
-                    session_id, pdf_bytes = row
-                    if pdf_bytes:
-                        file_path = self._data_dir / f"{session_id}.pdf"
-                        file_path.write_bytes(pdf_bytes)
-                        conn.execute(
-                            "UPDATE sessions SET pdf_file_path = ?, pdf_bytes = NULL WHERE session_id = ?",
-                            (str(file_path), session_id)
-                        )
-                print("[SessionManager] Migration complete")
-
-            # Add original_pdf_file_path column if it doesn't exist
-            if 'original_pdf_file_path' not in columns and columns:
-                try:
-                    conn.execute("ALTER TABLE sessions ADD COLUMN original_pdf_file_path TEXT")
-                    print("[SessionManager] Added original_pdf_file_path column")
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-
-            # Add context_files column if it doesn't exist
-            if 'context_files' not in columns and columns:
-                try:
-                    conn.execute("ALTER TABLE sessions ADD COLUMN context_files TEXT")
-                    print("[SessionManager] Added context_files column")
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-
-            conn.commit()
-        print(f"[SessionManager] Database initialized at: {self._db_path}")
-        print(f"[SessionManager] PDF storage directory: {self._data_dir}")
-
-    def _load_sessions_from_db(self):
-        """Load existing sessions from the database on startup."""
+    def _load_session_from_db(self, session_id: str, user_id: str) -> FormFillingSession | None:
+        """Load a single session from Supabase form_states table."""
         try:
-            with sqlite3.connect(self._db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.execute("SELECT * FROM sessions")
-                rows = cursor.fetchall()
-
-                for row in rows:
-                    session = FormFillingSession(row['session_id'])
-                    session.pdf_path = row['pdf_path']
-                    session.output_path = row['output_path']
-
-                    # Load filled PDF bytes from file if available
-                    pdf_file_path = row['pdf_file_path'] if 'pdf_file_path' in row.keys() else None
-                    if pdf_file_path:
-                        file_path = PathlibPath(pdf_file_path)
-                        if file_path.exists():
-                            session.current_pdf_bytes = file_path.read_bytes()
-
-                    # Load original PDF bytes from file if available
-                    original_pdf_file_path = row['original_pdf_file_path'] if 'original_pdf_file_path' in row.keys() else None
-                    if original_pdf_file_path:
-                        file_path = PathlibPath(original_pdf_file_path)
-                        if file_path.exists():
-                            session.original_pdf_bytes = file_path.read_bytes()
-
-                    # Parse applied_edits JSON
-                    if row['applied_edits']:
-                        try:
-                            session.applied_edits = json.loads(row['applied_edits'])
-                        except json.JSONDecodeError:
-                            session.applied_edits = {}
-
-                    # Load context_files JSON if available
-                    context_files_json = row['context_files'] if 'context_files' in row.keys() else None
-                    if context_files_json:
-                        try:
-                            session.context_files = json.loads(context_files_json)
-                        except json.JSONDecodeError:
-                            session.context_files = []
-
-                    self._sessions[session.session_id] = session
-
-                print(f"[SessionManager] Loaded {len(rows)} sessions from database")
+            client = get_client_for_user(user_id)
+            result = client.table("form_states").select("*").eq("session_id", session_id).eq("user_id", user_id).execute()
+            
+            if not result.data:
+                return None
+            
+            row = result.data[0]
+            session = FormFillingSession(row['session_id'])
+            session.pdf_path = row.get('pdf_filename')
+            session.output_path = row.get('pdf_filename')  # Temp path, not really used with storage
+            
+            # Store agent_session_id for multi-turn conversations
+            if row.get('agent_session_id'):
+                session.agent_session_id = row['agent_session_id']
+            
+            # Load filled PDF bytes from Supabase Storage if available
+            if row.get('pdf_storage_path'):
+                pdf_bytes = download_session_pdf(user_id, session_id, 'filled')
+                if pdf_bytes:
+                    session.current_pdf_bytes = pdf_bytes
+            
+            # Load original PDF bytes from Supabase Storage if available
+            if row.get('original_pdf_storage_path'):
+                pdf_bytes = download_session_pdf(user_id, session_id, 'original')
+                if pdf_bytes:
+                    session.original_pdf_bytes = pdf_bytes
+            
+            # Parse applied_edits JSONB
+            session.applied_edits = row.get('applied_edits', {})
+            
+            print(f"[SessionManager] Loaded form state {session_id} from Supabase")
+            return session
         except Exception as e:
-            print(f"[SessionManager] Error loading sessions: {e}")
+            print(f"[SessionManager] Error loading form state {session_id}: {e}")
+            return None
 
-    def _save_session_to_db(self, session: FormFillingSession):
-        """Save a session to the database (PDF bytes saved to file)."""
+    def _save_session_to_db(self, session: FormFillingSession, user_id: str):
+        """Save a session to Supabase form_states table (PDF bytes saved to Storage)."""
         try:
-            # Save filled PDF bytes to file if present
-            pdf_file_path = None
+            client = get_client_for_user(user_id)
+            
+            # Upload filled PDF to Supabase Storage if present
+            pdf_storage_path = None
             if session.current_pdf_bytes:
-                pdf_file_path = self._data_dir / f"{session.session_id}.pdf"
-                pdf_file_path.write_bytes(session.current_pdf_bytes)
-                pdf_file_path = str(pdf_file_path)
-
-            # Save original PDF bytes to file if present
-            original_pdf_file_path = None
-            if session.original_pdf_bytes:
-                original_pdf_file_path = self._data_dir / f"{session.session_id}_original.pdf"
-                original_pdf_file_path.write_bytes(session.original_pdf_bytes)
-                original_pdf_file_path = str(original_pdf_file_path)
-
-            # Serialize context_files to JSON
-            context_files_json = None
-            if session.context_files:
-                # Convert ParsedFile objects to dicts if needed
-                context_files_data = []
-                for cf in session.context_files:
-                    if hasattr(cf, 'to_dict'):
-                        context_files_data.append(cf.to_dict())
-                    elif isinstance(cf, dict):
-                        context_files_data.append(cf)
-                    else:
-                        context_files_data.append({
-                            "filename": getattr(cf, 'filename', 'unknown'),
-                            "content": getattr(cf, 'content', ''),
-                            "was_parsed": getattr(cf, 'was_parsed', False)
-                        })
-                context_files_json = json.dumps(context_files_data)
-
-            with sqlite3.connect(self._db_path) as conn:
-                conn.execute("""
-                    INSERT OR REPLACE INTO sessions
-                    (session_id, pdf_path, output_path, applied_edits, pdf_file_path, original_pdf_file_path, context_files, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM sessions WHERE session_id = ?), ?), ?)
-                """, (
+                pdf_storage_path = upload_session_pdf(
+                    user_id,
                     session.session_id,
-                    session.pdf_path,
-                    session.output_path,
-                    json.dumps(session.applied_edits) if session.applied_edits else None,
-                    pdf_file_path,
-                    original_pdf_file_path,
-                    context_files_json,
-                    session.session_id,  # For the COALESCE subquery
-                    time.time(),  # created_at (only used if new)
-                    time.time(),  # updated_at
-                ))
-                conn.commit()
+                    session.current_pdf_bytes,
+                    'filled'
+                )
+            
+            # Upload original PDF to Supabase Storage if present
+            original_pdf_storage_path = None
+            if session.original_pdf_bytes:
+                original_pdf_storage_path = upload_session_pdf(
+                    user_id,
+                    session.session_id,
+                    session.original_pdf_bytes,
+                    'original'
+                )
+            
+            # Prepare form state data
+            form_state_data = {
+                "session_id": session.session_id,
+                "user_id": user_id,
+                "agent_session_id": getattr(session, 'agent_session_id', None),
+                "pdf_filename": session.pdf_path,
+                "pdf_storage_path": pdf_storage_path,
+                "original_pdf_storage_path": original_pdf_storage_path,
+                "applied_edits": session.applied_edits or {},
+            }
+            
+            # Upsert form state record (updates expires_at automatically via trigger)
+            client.table("form_states").upsert(form_state_data).execute()
+            
+            print(f"[SessionManager] Saved form state {session.session_id} to Supabase")
         except Exception as e:
-            print(f"[SessionManager] Error saving session {session.session_id}: {e}")
+            print(f"[SessionManager] Error saving form state {session.session_id}: {e}")
 
-    def _delete_session_from_db(self, session_id: str):
-        """Delete a session from the database and its PDF files."""
+    def _delete_session_from_db(self, session_id: str, user_id: str):
+        """Delete a form state from Supabase and its PDF files from Storage."""
         try:
-            # Delete filled PDF file if it exists
-            pdf_file_path = self._data_dir / f"{session_id}.pdf"
-            if pdf_file_path.exists():
-                pdf_file_path.unlink()
-
-            # Delete original PDF file if it exists
-            original_pdf_file_path = self._data_dir / f"{session_id}_original.pdf"
-            if original_pdf_file_path.exists():
-                original_pdf_file_path.unlink()
-
-            with sqlite3.connect(self._db_path) as conn:
-                conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                conn.commit()
+            client = get_client_for_user(user_id)
+            
+            # Delete PDFs from Supabase Storage
+            delete_session_pdf(user_id, session_id)  # Deletes both original and filled
+            
+            # Delete form state record from database
+            client.table("form_states").delete().eq("session_id", session_id).eq("user_id", user_id).execute()
+            
+            print(f"[SessionManager] Deleted form state {session_id} from Supabase")
         except Exception as e:
-            print(f"[SessionManager] Error deleting session {session_id}: {e}")
+            print(f"[SessionManager] Error deleting form state {session_id}: {e}")
 
-    def create_session(self, session_id: str | None = None) -> FormFillingSession:
+    def create_session(self, session_id: str | None = None, user_id: str = None) -> FormFillingSession:
         """Create a new session with optional specified ID."""
+        if not user_id:
+            # Use default test user for development
+            user_id = "00000000-0000-0000-0000-000000000001"
+        
         session = FormFillingSession(session_id)
         with self._lock:
             self._sessions[session.session_id] = session
-        self._save_session_to_db(session)
+        self._save_session_to_db(session, user_id)
         print(f"[SessionManager] Created session: {session.session_id}")
         return session
 
-    def get_session(self, session_id: str) -> FormFillingSession | None:
+    def get_session(self, session_id: str, user_id: str = None) -> FormFillingSession | None:
         """Get an existing session by ID."""
+        if not user_id:
+            user_id = "00000000-0000-0000-0000-000000000001"
+        
         with self._lock:
-            return self._sessions.get(session_id)
+            # Check memory first
+            if session_id in self._sessions:
+                return self._sessions[session_id]
+            
+            # Load from database
+            session = self._load_session_from_db(session_id, user_id)
+            if session:
+                self._sessions[session_id] = session
+            return session
 
-    def get_or_create_session(self, session_id: str | None = None) -> FormFillingSession:
+    def get_or_create_session(self, session_id: str | None = None, user_id: str = None) -> FormFillingSession:
         """Get existing session or create a new one."""
+        if not user_id:
+            user_id = "00000000-0000-0000-0000-000000000001"
+        
         if session_id:
-            with self._lock:
-                if session_id in self._sessions:
-                    print(f"[SessionManager] Retrieved existing session: {session_id}")
-                    return self._sessions[session_id]
-        return self.create_session(session_id)
+            session = self.get_session(session_id, user_id)
+            if session:
+                print(f"[SessionManager] Retrieved existing session: {session_id}")
+                return session
+        return self.create_session(session_id, user_id)
 
-    def save_session(self, session: FormFillingSession):
+    def save_session(self, session: FormFillingSession, user_id: str = None):
         """Explicitly save session state to database."""
-        self._save_session_to_db(session)
+        if not user_id:
+            user_id = "00000000-0000-0000-0000-000000000001"
+        self._save_session_to_db(session, user_id)
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, user_id: str = None) -> bool:
         """Delete a session and clean up resources."""
+        if not user_id:
+            user_id = "00000000-0000-0000-0000-000000000001"
+        
         with self._lock:
             if session_id in self._sessions:
                 session = self._sessions[session_id]
                 session.reset()  # Clean up doc, etc.
                 del self._sessions[session_id]
-                self._delete_session_from_db(session_id)
-                print(f"[SessionManager] Deleted session: {session_id}")
-                return True
-        return False
+            self._delete_session_from_db(session_id, user_id)
+            print(f"[SessionManager] Deleted session: {session_id}")
+            return True
 
-    def cleanup_old_sessions(self, max_age_seconds: int = 3600):
+    def cleanup_old_form_states(self, max_age_seconds: int = 86400):
         """
-        Clean up sessions older than max_age_seconds.
-        Call this periodically in production to prevent database bloat.
+        Clean up form states older than max_age_seconds.
+        
+        Note: pg_cron handles automatic cleanup via expires_at, but this can be
+        called manually if needed.
         """
-        cutoff_time = time.time() - max_age_seconds
         try:
-            with sqlite3.connect(self._db_path) as conn:
-                # Get old session IDs
-                cursor = conn.execute(
-                    "SELECT session_id FROM sessions WHERE updated_at < ?",
-                    (cutoff_time,)
-                )
-                old_sessions = [row[0] for row in cursor.fetchall()]
-
-                # Delete PDF files (both filled and original)
-                for sid in old_sessions:
-                    pdf_file_path = self._data_dir / f"{sid}.pdf"
-                    if pdf_file_path.exists():
-                        pdf_file_path.unlink()
-                    original_pdf_file_path = self._data_dir / f"{sid}_original.pdf"
-                    if original_pdf_file_path.exists():
-                        original_pdf_file_path.unlink()
-
-                # Delete from database
-                conn.execute(
-                    "DELETE FROM sessions WHERE updated_at < ?",
-                    (cutoff_time,)
-                )
-                conn.commit()
-
-                # Remove from memory
+            from datetime import datetime, timedelta
+            
+            client = get_supabase_client(use_service_key=True)
+            
+            # Calculate cutoff time
+            cutoff = datetime.now() - timedelta(seconds=max_age_seconds)
+            
+            # Get old form states
+            old_states = client.table("form_states").select("session_id, user_id").lt("updated_at", cutoff.isoformat()).execute()
+            
+            if not old_states.data:
+                return
+            
+            # Delete each form state (this will also delete PDFs)
+            for state_row in old_states.data:
+                session_id = state_row['session_id']
+                user_id = state_row['user_id']
+                self._delete_session_from_db(session_id, user_id)
+                
+                # Remove from memory if present
                 with self._lock:
-                    for sid in old_sessions:
-                        if sid in self._sessions:
-                            self._sessions[sid].reset()
-                            del self._sessions[sid]
-
-                if old_sessions:
-                    print(f"[SessionManager] Cleaned up {len(old_sessions)} old sessions")
-
+                    if session_id in self._sessions:
+                        self._sessions[session_id].reset()
+                        del self._sessions[session_id]
+            
+            print(f"[SessionManager] Manually cleaned up {len(old_states.data)} old form states")
         except Exception as e:
             print(f"[SessionManager] Error during cleanup: {e}")
 
-    def get_session_pdf_bytes(self, session_id: str) -> bytes | None:
+    def get_session_pdf_bytes(self, session_id: str, user_id: str = None) -> bytes | None:
         """Get the filled PDF bytes for a session (for API retrieval)."""
-        session = self.get_session(session_id)
+        if not user_id:
+            user_id = "00000000-0000-0000-0000-000000000001"
+        
+        session = self.get_session(session_id, user_id)
         if session and session.current_pdf_bytes:
             return session.current_pdf_bytes
-        return None
+        
+        # Try to load from storage directly
+        return download_session_pdf(user_id, session_id, 'filled')
 
-    def get_session_original_pdf_bytes(self, session_id: str) -> bytes | None:
+    def get_session_original_pdf_bytes(self, session_id: str, user_id: str = None) -> bytes | None:
         """Get the original (unfilled) PDF bytes for a session (for API retrieval)."""
-        session = self.get_session(session_id)
+        if not user_id:
+            user_id = "00000000-0000-0000-0000-000000000001"
+        
+        session = self.get_session(session_id, user_id)
         if session and session.original_pdf_bytes:
             return session.original_pdf_bytes
-        return None
+        
+        # Try to load from storage directly
+        return download_session_pdf(user_id, session_id, 'original')
 
-    def get_session_context_files(self, session_id: str) -> list | None:
+    def get_session_context_files(self, session_id: str, user_id: str = None) -> list | None:
         """Get the context files for a session (for API retrieval)."""
-        session = self.get_session(session_id)
+        if not user_id:
+            user_id = "00000000-0000-0000-0000-000000000001"
+        
+        session = self.get_session(session_id, user_id)
         if session and session.context_files:
             return session.context_files
         return None
@@ -652,6 +590,21 @@ if AGENT_SDK_AVAILABLE:
 
         print(f"[commit_edits] Saving to: {output_path}")
 
+        if session.doc.is_pdf:
+            catalog_xref = session.doc.pdf_catalog()
+            acroform_info = session.doc.xref_get_key(catalog_xref, "AcroForm")
+            
+            if acroform_info[0] == "dict":
+                acro_dict = acroform_info[1]
+                if "/NeedAppearances true" not in acro_dict:
+                    if "/NeedAppearances false" in acro_dict:
+                        new_dict = acro_dict.replace("/NeedAppearances false", "/NeedAppearances true")
+                    else:
+                        new_dict = acro_dict.strip().rstrip(">") + " /NeedAppearances true >>"
+                    session.doc.xref_set_key(catalog_xref, "AcroForm", new_dict)
+            else:
+                session.doc.xref_set_key(catalog_xref, "AcroForm", "<< /NeedAppearances true >>")
+
         applied = []
         errors = []
 
@@ -682,15 +635,11 @@ if AGENT_SDK_AVAILABLE:
                                 print(f"[commit_edits] Clearing field {field_id} (was: {widget.field_value})")
                                 widget.field_value = " "
                         
-                        # Ensure text is visible (black) and auto-sized if not set
-                        # This fixes issues where some viewers (like PDFGear) show empty fields
-                        # because the default appearance didn't specify a color.
-                        widget.text_color = [0, 0, 0]
-                        widget.text_fontsize = 0   # Auto-size
-                        
-                        # Update the widget
-                        res = widget.update()
-                        print(f"[commit_edits] Widget update result: {res}")
+                        try:
+                            widget.need_appearances = True
+                            widget.update()
+                        except AttributeError:
+                            widget.update()
                         
                         applied.append({"field_id": field_id, "value": value})
                         session.applied_edits[field_id] = value
@@ -707,12 +656,13 @@ if AGENT_SDK_AVAILABLE:
 
         # Save
         try:
-            # Disable NeedAppearances so viewers use the appearances we generated
-            set_need_appearances(session.doc, False)
-            print("[commit_edits] Set NeedAppearances=false")
-
-            # Use default save options to avoid over-optimizing/removing form data
-            session.doc.save(output_path)
+            session.doc.save(
+                output_path,
+                clean=True,
+                deflate=True,
+                garbage=3,
+                expand=255
+            )
             print(f"[commit_edits] Saved successfully to: {output_path}")
 
             # Store the filled PDF bytes for multi-turn
@@ -1125,7 +1075,7 @@ async def run_agent_stream(
     resume_session_id: str | None = None,
     user_session_id: str | None = None,
     original_pdf_bytes: bytes | None = None,
-    context_files: list | None = None,
+    intelligent_context: str | None = None,
     anthropic_api_key: str | None = None,
 ):
     """
@@ -1143,7 +1093,7 @@ async def run_agent_stream(
         resume_session_id: Session ID from previous turn to resume conversation context
         user_session_id: Unique ID for this user's form-filling session (for concurrent users)
         original_pdf_bytes: The original (unfilled) PDF bytes for first-turn sessions
-        context_files: List of parsed context files (dicts with filename, content, was_parsed)
+        intelligent_context: Pre-generated intelligent context from waterfall search
         anthropic_api_key: User-provided Anthropic API key for Claude calls
 
     Yields:
@@ -1177,26 +1127,15 @@ async def run_agent_stream(
         if original_pdf_bytes:
             session.original_pdf_bytes = original_pdf_bytes
 
-    # Store context files in session (they persist across turns)
-    if context_files:
-        session.context_files = context_files
-
-    # Build context files section if available - ONLY for first turn
+    # Build intelligent context section if available - ONLY for first turn
     # For continuations, context is already in conversation history via session resumption
     context_section = ""
-    if not is_continuation:
-        all_context_files = session.context_files or []
-        if all_context_files:
-            context_parts = []
-            for cf in all_context_files:
-                filename = cf.get("filename", "unknown") if isinstance(cf, dict) else getattr(cf, "filename", "unknown")
-                content = cf.get("content", "") if isinstance(cf, dict) else getattr(cf, "content", "")
-                context_parts.append(f"### {filename}\n{content}")
-            context_section = f"""
-## Reference Documents
-The user has provided the following documents as context for filling out the form. Use information from these documents to fill the form fields accurately.
+    if not is_continuation and intelligent_context:
+        context_section = f"""
+## Retrieved Context
+The following information was retrieved from your documents based on the form fields and instructions:
 
-{chr(10).join(context_parts)}
+{intelligent_context}
 
 ---
 """
@@ -1338,7 +1277,9 @@ Start by loading the PDF, then list the fields, fill them according to the instr
     print(f"  Output tokens: {total_output_tokens}")
 
     # Save session state to database for persistence across server restarts
-    _session_manager.save_session(session)
+    # Use default test user for now (TODO: get from auth)
+    save_user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
+    _session_manager.save_session(session, save_user_id)
 
     # Yield final summary with applied edits and session_id for multi-turn tracking
     yield {
@@ -1454,7 +1395,8 @@ Start by loading the PDF, then list the fields, fill them according to the instr
                 del os_module.environ["ANTHROPIC_API_KEY"]
 
     # Save session state to database for persistence across server restarts
-    _session_manager.save_session(session)
+    save_user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
+    _session_manager.save_session(session, save_user_id)
 
     return {
         "success": True,
