@@ -45,6 +45,7 @@ def get_openai_client() -> AsyncOpenAI:
                 "OPENAI_API_KEY not configured. "
                 "Set it in your .env file for embedding generation."
             )
+        _openai_client = AsyncOpenAI(api_key=api_key, base_url="https://litellm.deriv.ai/v1")
         _openai_client = AsyncOpenAI(api_key=api_key,base_url="https://litellm.deriv.ai/v1")
     return _openai_client
 
@@ -618,8 +619,9 @@ if __name__ == "__main__":
         print(f"Embedding dimension: {len(embeddings[0])}")
         
         # Test chunking (placeholder)
-        test_text = "This is a long document. " * 100
-        chunks = await chunk_document(test_text, chunk_size=1000, overlap=200)
-        print(f"Created {len(chunks)} chunks")
-
+        # test_text = "This is a long document. " * 100
+        # chunks = await chunk_document(test_text, chunk_size=100)
+        # print(f"Created {len(chunks)} chunks")
+    
     asyncio.run(test())
+
