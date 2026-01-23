@@ -30,3 +30,6 @@ openai
 
 # Environment variables
 python-dotenv
+
+# Langchain Text Splitter (for chunking)
+langchain-text-splitters==1.1.0 
