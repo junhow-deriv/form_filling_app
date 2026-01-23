@@ -17,11 +17,15 @@ Implemented sections:
 """
 
 import os
+import re
 from typing import Optional, List
 from openai import AsyncOpenAI
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from database.supabase_client import get_client_for_user, get_supabase_client
 from storage.storage_service import calculate_file_hash
 from parser import parse_file
+
+
 
 
 # OpenAI client for embeddings
@@ -42,7 +46,7 @@ def get_openai_client() -> AsyncOpenAI:
                 "OPENAI_API_KEY not configured. "
                 "Set it in your .env file for embedding generation."
             )
-        _openai_client = AsyncOpenAI(api_key=api_key)
+        _openai_client = AsyncOpenAI(api_key=api_key,base_url="https://litellm.deriv.ai/v1")
     return _openai_client
 
 
@@ -149,24 +153,21 @@ async def chunk_document(text: str, chunk_size: int = 1000, overlap: int = 200) 
     Returns:
         List of chunk dicts with 'text' and 'metadata' keys
     """
-    # PLACEHOLDER: Simple naive chunking for now
-    # Your teammate will replace this with proper semantic chunking
-    print(f"[Chunking] TODO: Implement proper document chunking")
     
-    if not text or len(text) < chunk_size:
-        return [{"text": text, "metadata": {"chunk_index": 0}}]
-    
-    # Very basic chunking (teammate will improve this)
-    chunks = []
-    for i in range(0, len(text), chunk_size - overlap):
-        chunk_text = text[i:i + chunk_size]
-        chunks.append({
-            "text": chunk_text,
-            "metadata": {"chunk_index": len(chunks)}
+    # Basic implementation using RecursiveCharacterTextSplitter
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=overlap)
+    chunks= text_splitter.split_text(text)
+
+    chunks_with_metadata = []
+    for i in range(len(chunks)):
+        chunks_with_metadata.append({
+            "metadata": {"chunk_index": i},
+            "text": chunks[i],
         })
-    
-    print(f"[Chunking] Created {len(chunks)} chunks (BASIC IMPLEMENTATION - NEEDS IMPROVEMENT)")
-    return chunks
+
+    print(f"""[Chunking] Created {len(chunks_with_metadata)} chunks (BASIC IMPLEMENTATION - RecursiveCharacterTextSplitter)
+    Chunk size: {chunk_size}, Overlap: {overlap}""")
+    return chunks_with_metadata
 
 
 # ============================================================================
@@ -619,7 +620,7 @@ if __name__ == "__main__":
         
         # Test chunking (placeholder)
         test_text = "This is a long document. " * 100
-        chunks = await chunk_document(test_text, chunk_size=100)
+        chunks = await chunk_document(test_text, chunk_size=1000, overlap=200)
         print(f"Created {len(chunks)} chunks")
-    
+
     asyncio.run(test())
