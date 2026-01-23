@@ -348,6 +348,72 @@
             color: var(--success);
         }
         
+        /* Context Files List */
+        .context-files-list {
+            margin-top: 1rem;
+            display: none;
+        }
+        
+        .context-files-list.visible {
+            display: block;
+        }
+        
+        .context-file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.5rem 0.75rem;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+        
+        .context-file-info {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex: 1;
+            min-width: 0;
+        }
+        
+        .context-file-icon {
+            flex-shrink: 0;
+        }
+        
+        .context-file-name {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .context-file-size {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            flex-shrink: 0;
+            margin-left: 0.5rem;
+        }
+        
+        .context-file-remove {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 1.2rem;
+            line-height: 1;
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+        
+        .context-file-remove:hover {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--error);
+        }
+        
         /* Loading */
         .spinner {
             display: inline-block;
@@ -552,6 +618,20 @@
         <div class="card">
             <div class="card-header">
                 <span class="step-number">2</span>
+                <span class="card-title">Upload Context Files (Optional)</span>
+            </div>
+            <div class="upload-zone" id="context-upload-zone">
+                <div class="upload-icon">📎</div>
+                <p class="upload-text">Drop context files here or click to upload (PDF, TXT, MD, DOCX)</p>
+                <p class="file-name" id="context-file-names"></p>
+            </div>
+            <input type="file" id="context-file-input" accept=".pdf,.txt,.md,.docx" multiple>
+            <div class="context-files-list" id="context-files-list"></div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <span class="step-number">3</span>
                 <span class="card-title">Describe what to fill</span>
             </div>
             <textarea 
@@ -625,6 +705,7 @@
         const toast = document.getElementById('toast');
         
         let currentFile = null;
+        let contextFiles = [];
         
         // Get selected mode
         function getMode() {
@@ -672,6 +753,92 @@
         }
         
         instructions.addEventListener('input', updateButtons);
+        
+        // Context file upload handling
+        const contextUploadZone = document.getElementById('context-upload-zone');
+        const contextFileInput = document.getElementById('context-file-input');
+        const contextFileNames = document.getElementById('context-file-names');
+        
+        contextUploadZone.addEventListener('click', () => contextFileInput.click());
+        
+        contextUploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            contextUploadZone.classList.add('dragover');
+        });
+        
+        contextUploadZone.addEventListener('dragleave', () => {
+            contextUploadZone.classList.remove('dragover');
+        });
+        
+        contextUploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            contextUploadZone.classList.remove('dragover');
+            handleContextFiles(Array.from(e.dataTransfer.files));
+        });
+        
+        contextFileInput.addEventListener('change', () => {
+            handleContextFiles(Array.from(contextFileInput.files));
+        });
+        
+        function handleContextFiles(files) {
+            const newFiles = Array.from(files);
+            const existingFiles = Array.from(contextFiles);
+            
+            const fileMap = new Map();
+            [...existingFiles, ...newFiles].forEach(f => {
+                fileMap.set(f.name, f);
+            });
+            
+            contextFiles = Array.from(fileMap.values());
+            updateContextFilesDisplay();
+        }
+        
+        function updateContextFilesDisplay() {
+            const contextFilesList = document.getElementById('context-files-list');
+            
+            if (contextFiles.length > 0) {
+                contextFileNames.textContent = `${contextFiles.length} file(s) selected`;
+                contextUploadZone.classList.add('has-file');
+                contextFilesList.classList.add('visible');
+                
+                contextFilesList.innerHTML = contextFiles.map((file, index) => {
+                    const sizeKB = (file.size / 1024).toFixed(1);
+                    const icon = getFileIcon(file.name);
+                    return `
+                        <div class="context-file-item">
+                            <div class="context-file-info">
+                                <span class="context-file-icon">${icon}</span>
+                                <span class="context-file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+                                <span class="context-file-size">${sizeKB} KB</span>
+                            </div>
+                            <button class="context-file-remove" onclick="removeContextFile(${index})" title="Remove file">×</button>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                contextFileNames.textContent = '';
+                contextUploadZone.classList.remove('has-file');
+                contextFilesList.classList.remove('visible');
+                contextFilesList.innerHTML = '';
+            }
+        }
+        
+        function removeContextFile(index) {
+            contextFiles.splice(index, 1);
+            updateContextFilesDisplay();
+        }
+        
+        function getFileIcon(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const icons = {
+                'pdf': '📄',
+                'txt': '📝',
+                'md': '📝',
+                'docx': '📘',
+                'doc': '📘'
+            };
+            return icons[ext] || '📎';
+        }
         
         // Analyze fields
         analyzeBtn.addEventListener('click', async () => {
@@ -832,6 +999,13 @@
             const formData = new FormData();
             formData.append('file', currentFile);
             formData.append('instructions', instructions.value);
+            
+            // Append context files if any
+            if (contextFiles.length > 0) {
+                for (const cf of contextFiles) {
+                    formData.append('context_files', cf);
+                }
+            }
             
             try {
                 const response = await fetch('/fill-agent-stream', {
