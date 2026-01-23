@@ -12,7 +12,7 @@ export interface ParseProgress {
   current: number;
   total: number;
   filename: string;
-  status: 'parsing' | 'reading_text' | 'llamaparse' | 'complete' | 'error';
+  status: 'parsing' | 'reading_text' | 'docling' | 'complete' | 'error';
   error?: string;
 }
 
@@ -99,7 +99,7 @@ export default function ContextFilesUpload({
 
   return (
     <div className="space-y-3">
-      {/* Header with toggle */}
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <svg className="w-4 h-4 text-foreground-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -108,20 +108,6 @@ export default function ContextFilesUpload({
           <span className="text-xs font-medium text-foreground-secondary">
             Context Files ({totalCount}/{maxFiles})
           </span>
-        </div>
-
-        {/* Parse mode toggle */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-foreground-muted">Mode:</span>
-          <select
-            value={parseMode}
-            onChange={(e) => setParseMode(e.target.value as 'cost_effective' | 'agentic_plus')}
-            disabled={disabled || isUploading}
-            className="text-xs px-2 py-1 rounded bg-background-tertiary border border-border text-foreground disabled:opacity-50"
-          >
-            <option value="cost_effective">Cost Effective</option>
-            <option value="agentic_plus">Agentic Plus</option>
-          </select>
         </div>
       </div>
 
@@ -215,7 +201,7 @@ export default function ContextFilesUpload({
         <div className="px-3 py-2 rounded-lg bg-accent/10 text-accent">
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs">
-              {parseProgress.status === 'llamaparse' ? 'Parsing with LlamaParse' :
+              {parseProgress.status === 'docling' ? 'Parsing with Docling' :
                parseProgress.status === 'reading_text' ? 'Reading text file' :
                parseProgress.status === 'complete' ? 'Complete' :
                parseProgress.status === 'error' ? 'Error' : 'Processing'}

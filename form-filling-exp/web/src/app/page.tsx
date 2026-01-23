@@ -14,15 +14,13 @@ import {
 } from '@/lib/session';
 import LeftPanel from '@/components/LeftPanel';
 import ChatPanel from '@/components/ChatPanel';
-import ApiKeyGate, { clearStoredApiKeys } from '@/components/ApiKeyGate';
-
 // Helper to generate unique IDs
 const generateId = () => Math.random().toString(36).substring(2, 11);
 
 export default function Home() {
-  // API keys (required to use the app)
-  const [llamaApiKey, setLlamaApiKey] = useState<string | null>(null);
-  const [anthropicApiKey, setAnthropicApiKey] = useState<string | null>(null);
+  // API keys (handled by backend env vars)
+  const [llamaApiKey] = useState<string | null>(null);
+  const [anthropicApiKey] = useState<string | null>(null);
 
   const [sessionId, setSessionId] = useState<string>('');
   const [file, setFile] = useState<File | null>(null);
@@ -195,7 +193,7 @@ export default function Home() {
       try {
         const results: ContextFile[] = [];
 
-        for await (const event of streamParseFiles(files, parseMode, llamaApiKey!, currentUserSessionId)) {
+        for await (const event of streamParseFiles(files, parseMode, currentUserSessionId)) {
           if (event.type === 'progress' && event.current !== undefined && event.total !== undefined && event.filename && event.status) {
             setParseProgress({
               current: event.current,
@@ -425,29 +423,10 @@ export default function Home() {
     [file, filledPdfBytes, appliedEdits, agentSessionId, userSessionId, sessionId, fields, messages, anthropicApiKey]
   );
 
-  // Handler for when both API keys are validated
-  const handleApiKeysValidated = useCallback((llama: string, anthropic: string) => {
-    setLlamaApiKey(llama);
-    setAnthropicApiKey(anthropic);
-  }, []);
-
   return (
-    <ApiKeyGate onApiKeysValidated={handleApiKeysValidated}>
     <div className="h-screen flex flex-col bg-background">
       {/* Header */}
-      <header className="flex-shrink-0 px-6 py-3 border-b border-border flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <img
-            src="/llamaindex-logo.png"
-            alt="LlamaIndex"
-            className="w-8 h-8 rounded-lg"
-          />
-          <div>
-            <h1 className="text-sm font-semibold">Form Filler</h1>
-            <p className="text-xs text-foreground-muted">AI-powered PDF form completion by LlamaIndex</p>
-          </div>
-        </div>
-
+      <header className="flex-shrink-0 px-6 py-3 border-b border-border flex items-center justify-end">
         <div className="flex items-center gap-4">
           {sessionId && (
             <div className="text-xs text-foreground-muted">
@@ -461,18 +440,6 @@ export default function Home() {
           >
             API Docs
           </a>
-          <button
-            onClick={() => {
-              clearStoredApiKeys();
-              setLlamaApiKey(null);
-              setAnthropicApiKey(null);
-              window.location.reload();
-            }}
-            className="text-xs text-foreground-muted hover:text-error transition-colors"
-            title="Sign out and clear API keys"
-          >
-            Sign Out
-          </button>
         </div>
       </header>
 
@@ -510,7 +477,6 @@ export default function Home() {
         </div>
       </main>
     </div>
-    </ApiKeyGate>
   );
 }
 

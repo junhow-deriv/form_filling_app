@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 from typing import Literal, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -32,7 +33,7 @@ from llm import map_instructions_to_fields
 from agent import run_agent, run_agent_stream, AGENT_SDK_AVAILABLE, AGENT_SDK_ERROR, _session_manager
 from parser import (
     parse_files_stream, needs_parsing, is_simple_text,
-    LLAMAPARSE_AVAILABLE, LLAMAPARSE_ERROR, ParsedFile,
+    DOCLING_AVAILABLE, DOCLING_ERROR, ParsedFile,
     estimate_file_chars
 )
 from services.query_generator import generate_field_queries
@@ -56,6 +57,9 @@ MAX_CONTEXT_CHARS = MAX_CONTEXT_TOKENS * CHARS_PER_TOKEN  # 480,000
 # ============================================================================
 # App Setup
 # ============================================================================
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI(
     title="PDF Form Filler",
@@ -754,6 +758,7 @@ async def parse_context_files(
     user_session_id: Optional[str] = Form(None),
     is_ephemeral: bool = Form(True),
 ):
+    # NOTE: api_key parameter has been removed as we now use Docling (open source) instead of LlamaParse
     """
     Upload and process context files with extraction, chunking, and embedding.
 
@@ -777,7 +782,6 @@ async def parse_context_files(
     Returns:
         SSE stream with progress updates and final results
     """
-
     # Validate file count
     if len(files) > 10:
         raise HTTPException(status_code=400, detail="Maximum 10 files allowed")
@@ -785,11 +789,53 @@ async def parse_context_files(
     if len(files) == 0:
         raise HTTPException(status_code=400, detail="At least one file is required")
 
+    # Validate parse mode
+    if parse_mode not in ("cost_effective", "agentic_plus"):
+        raise HTTPException(status_code=400, detail="Invalid parse_mode. Use 'cost_effective' or 'agentic_plus'")
+
+    # Check if Docling is available for files that need it
+    files_needing_parse = [f for f in files if needs_parsing(f.filename or "")]
+    if files_needing_parse and not DOCLING_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Docling not available: {DOCLING_ERROR}. Cannot parse: {[f.filename for f in files_needing_parse]}"
+        )
+
     # Read all file bytes
     file_data = []
     for f in files:
         content = await f.read()
         file_data.append((content, f.filename or "unknown"))
+
+    # Pre-validation: estimate token usage before expensive Docling calls
+    # Use 80% threshold to be conservative (Docling often extracts more than raw extraction)
+    PRE_VALIDATION_THRESHOLD = int(MAX_CONTEXT_CHARS * 0.8)
+
+    estimated_chars = 0
+    file_estimates = []
+    for file_bytes, filename in file_data:
+        est = estimate_file_chars(file_bytes, filename)
+        estimated_chars += est
+        file_estimates.append((filename, est))
+
+    estimated_tokens = estimated_chars // CHARS_PER_TOKEN
+
+    if estimated_chars > PRE_VALIDATION_THRESHOLD:
+        # Sort by size to show largest files first
+        file_estimates.sort(key=lambda x: x[1], reverse=True)
+        largest_files = ", ".join(f"{name} (~{chars//CHARS_PER_TOKEN:,} tokens)"
+                                  for name, chars in file_estimates[:3])
+
+        async def rejection_stream():
+            yield f"data: {json.dumps({'type': 'error', 'error': f'Files likely exceed token limit before parsing. Estimated ~{estimated_tokens:,} tokens, limit is {MAX_CONTEXT_TOKENS:,} tokens. Largest files: {largest_files}. Please upload fewer or smaller files.'})}\n\n"
+
+        return StreamingResponse(
+            rejection_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
+
+    print(f"[Parse] Pre-validation passed: ~{estimated_tokens:,} estimated tokens for {len(file_data)} files")
 
     async def event_stream():
         yield f"data: {json.dumps({'type': 'init', 'message': f'Processing {len(file_data)} file(s)...'})}\n\n"
@@ -851,73 +897,11 @@ async def parse_context_files(
 
 @app.get("/parse-status")
 async def get_parse_status():
-    """Check if LlamaParse is available."""
+    """Check if Docling is available."""
     return {
-        "llamaparse_available": LLAMAPARSE_AVAILABLE,
-        "llamaparse_error": LLAMAPARSE_ERROR if not LLAMAPARSE_AVAILABLE else None,
+        "docling_available": DOCLING_AVAILABLE,
+        "docling_error": DOCLING_ERROR if not DOCLING_AVAILABLE else None,
     }
-
-
-@app.post("/validate-api-key")
-async def validate_api_key(api_key: str = Form(...)):
-    """
-    Validate a LlamaCloud API key by making a test request.
-
-    This endpoint is used to gate access to the application.
-    Users must provide a valid LlamaCloud API key before using the app.
-    """
-    if not api_key or not api_key.strip():
-        raise HTTPException(status_code=400, detail="API key is required")
-
-    api_key = api_key.strip()
-
-    # Validate key format (LlamaCloud keys start with "llx-")
-    if not api_key.startswith("llx-"):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid API key format. LlamaCloud API keys start with 'llx-'"
-        )
-
-    # Test the key by making a request to LlamaCloud API
-    try:
-        import httpx
-
-        # Use the LlamaCloud API list projects endpoint to validate the key
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                "https://api.cloud.llamaindex.ai/api/v1/projects",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=10.0,
-            )
-
-            if response.status_code == 401:
-                raise HTTPException(
-                    status_code=401,
-                    detail="Invalid API key. Please check your LlamaCloud API key."
-                )
-            elif response.status_code == 403:
-                raise HTTPException(
-                    status_code=403,
-                    detail="API key does not have permission. Please check your LlamaCloud account."
-                )
-            elif response.status_code >= 400:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Failed to validate API key: {response.text}"
-                )
-
-            return {"valid": True, "message": "API key is valid"}
-
-    except httpx.TimeoutException:
-        raise HTTPException(
-            status_code=504,
-            detail="Timeout while validating API key. Please try again."
-        )
-    except httpx.RequestError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to connect to LlamaCloud: {str(e)}"
-        )
 
 
 @app.post("/validate-anthropic-key")
@@ -1113,4 +1097,3 @@ if __name__ == "__main__":
     print("="*60 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

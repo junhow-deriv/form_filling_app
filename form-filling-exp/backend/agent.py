@@ -62,7 +62,7 @@ try:
 except ImportError:
     fitz = None
 
-from pdf_processor import detect_form_fields, DetectedField, FieldType
+from pdf_processor import detect_form_fields, DetectedField, FieldType, set_need_appearances
 
 
 # ============================================================================
@@ -616,9 +616,13 @@ if AGENT_SDK_AVAILABLE:
 
             try:
                 page = session.doc[field.page]
+                found_widget = False
                 for widget in page.widgets():
                     widget_field_id = f"page{field.page}_{widget.field_name}"
                     if widget_field_id == field_id:
+                        found_widget = True
+                        print(f"[commit_edits] Found widget for {field_id}. Current value: '{widget.field_value}'")
+                        
                         if field.field_type == FieldType.CHECKBOX:
                             widget.field_value = bool(value)
                         else:
@@ -641,6 +645,11 @@ if AGENT_SDK_AVAILABLE:
                         session.applied_edits[field_id] = value
                         print(f"[commit_edits] Applied: {field_id} = {value}")
                         break
+                
+                if not found_widget:
+                    print(f"[commit_edits] WARNING: Widget not found for {field_id} on page {field.page}")
+                    errors.append(f"Widget not found for {field_id}")
+                    
             except Exception as e:
                 errors.append(f"Failed to apply {field_id}: {str(e)}")
                 print(f"[commit_edits] Error: {e}")
@@ -1210,13 +1219,12 @@ Start by loading the PDF, then list the fields, fill them according to the instr
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             result_text = block.text
-                            # Show first 200 chars of text
-                            preview = result_text[:200].replace('\n', ' ')
-                            print(f"[Agent Stream] #{message_count} {msg_type}: {preview}...")
+                            # Show full text
+                            print(f"[Agent Stream] #{message_count} {msg_type}: {result_text}")
                         else:
                             # Could be ToolUseBlock or other types
                             block_type = type(block).__name__
-                            print(f"[Agent Stream] #{message_count} {msg_type}/{block_type}: {str(block)[:150]}")
+                            print(f"[Agent Stream] #{message_count} {msg_type}/{block_type}: {str(block)}")
                 elif ResultMessage and isinstance(message, ResultMessage):
                     # Extract session_id from ResultMessage for multi-turn support
                     agent_session_id = getattr(message, 'session_id', None)
@@ -1225,9 +1233,9 @@ Start by loading the PDF, then list the fields, fill them according to the instr
                     # For other message types, show what we can
                     content_preview = ""
                     if hasattr(message, 'content'):
-                        content_preview = str(message.content)[:150]
+                        content_preview = str(message.content)
                     elif hasattr(message, 'text'):
-                        content_preview = str(message.text)[:150]
+                        content_preview = str(message.text)
                     print(f"[Agent Stream] #{message_count} {msg_type}: {content_preview}")
 
                 # Extract and log token usage if available (only on ResultMessage)
