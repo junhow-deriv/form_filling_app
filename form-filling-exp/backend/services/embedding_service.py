@@ -18,8 +18,8 @@ Implemented sections:
 
 import os
 from typing import Optional, List
+import tiktoken
 from openai import AsyncOpenAI
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from database.supabase_client import get_client_for_user, get_supabase_client
 from storage.storage_service import calculate_file_hash
 from parser import parse_file
@@ -135,39 +135,54 @@ async def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
 # Document Chunking (TODO - PLACEHOLDER)
 # ============================================================================
 
-async def chunk_document(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[dict]:
+async def chunk_document(text: str, filename: str, chunk_size: int = 1000, overlap: int = 200) -> List[dict]:
     """
-    Split document text into chunks for embedding.
-    
-    TODO: This is a placeholder. Your teammate should implement:
-    1. Use semantic chunking (e.g., LangChain's RecursiveCharacterTextSplitter)
-    2. Respect document structure (paragraphs, sections)
-    3. Add metadata (page numbers, section titles)
-    4. Handle tables and lists appropriately
+    Split document text into chunks for embedding using tiktoken.
     
     Args:
         text: Full document text
-        chunk_size: Target chunk size in characters
-        overlap: Overlap between chunks
+        filename: Original filename
+        chunk_size: Target chunk size in tokens
+        overlap: Overlap between chunks in tokens
         
     Returns:
         List of chunk dicts with 'text' and 'metadata' keys
     """
+    # Use cl100k_base encoding (used by gpt-4, gpt-3.5-turbo, text-embedding-ada-002)
+    encoding = tiktoken.get_encoding("cl100k_base")
+    tokens = encoding.encode(text)
+    num_tokens = len(tokens)
+    print(f"[Chunking] Document has {num_tokens} tokens")
+    chunks = []
+    start = 0
     
-    # Basic implementation using RecursiveCharacterTextSplitter
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=overlap)
-    chunks= text_splitter.split_text(text)
+    # If the document is empty, return no chunks
+    if num_tokens == 0:
+        return []
+        
+    # Calculate step size (sliding window)
+    step = chunk_size - overlap
+    if step <= 0:
+        step = 1  # Ensure we always move forward
 
-    chunks_with_metadata = []
-    for i in range(len(chunks)):
-        chunks_with_metadata.append({
-            "metadata": {"chunk_index": i},
-            "text": chunks[i],
+    chunk_idx = 0
+    for start in range(0, num_tokens, step):
+        end = min(start + chunk_size, num_tokens)
+        chunk_tokens = tokens[start:end]
+        chunk_text = encoding.decode(chunk_tokens)
+        
+        chunks.append({
+            "metadata": {"chunk_index": chunk_idx, "filename": filename, "chunk_token_count": len(chunk_tokens)},
+            "text": chunk_text
         })
-
-    print(f"""[Chunking] Created {len(chunks_with_metadata)} chunks (BASIC IMPLEMENTATION - RecursiveCharacterTextSplitter)
-    Chunk size: {chunk_size}, Overlap: {overlap}""")
-    return chunks_with_metadata
+        chunk_idx += 1
+        
+        # If we reached the end, break
+        if end == num_tokens:
+            break
+        
+    print(f"[Chunking] Created {len(chunks)} chunks using tiktoken (size={chunk_size}, overlap={overlap})")
+    return chunks
 
 
 # ============================================================================
@@ -239,7 +254,7 @@ async def store_document(
     print(f"[Store] Created document: {document_id} ({source_type})")
     
     # Chunk the text (TODO: teammate will implement proper chunking)
-    chunks = await chunk_document(raw_text)
+    chunks = await chunk_document(raw_text, filename)
     
     if not chunks:
         print(f"[Store] No chunks created for document {document_id}")
@@ -609,19 +624,20 @@ if __name__ == "__main__":
     import asyncio
     
     async def test():
-        print("Embedding Service Test")
-        print("=" * 50)
+        # print("Embedding Service Test")
+        # print("=" * 50)
         
-        # Test embedding generation
-        test_texts = ["Hello, world!", "This is a test document."]
-        embeddings = await generate_embeddings(test_texts)
-        print(f"Generated {len(embeddings)} embeddings")
-        print(f"Embedding dimension: {len(embeddings[0])}")
+        # # Test embedding generation
+        # test_texts = ["Hello, world!", "This is a test document."]
+        # embeddings = await generate_embeddings(test_texts)
+        # print(f"Generated {len(embeddings)} embeddings")
+        # print(f"Embedding dimension: {len(embeddings[0])}")
         
-        # Test chunking (placeholder)
-        # test_text = "This is a long document. " * 100
-        # chunks = await chunk_document(test_text, chunk_size=100)
-        # print(f"Created {len(chunks)} chunks")
-    
-    asyncio.run(test())
+        # Test chunking
+        test_text_2 = "This is a long document. " * 100
+        # Using chunk_size=100 and overlap=50 to demonstrate sliding window
+        chunks = await chunk_document(test_text_2, "test_doc.txt", chunk_size=100, overlap=50)
+        print(f"Created {len(chunks)} chunks")
+        print(chunks)
 
+    asyncio.run(test())
