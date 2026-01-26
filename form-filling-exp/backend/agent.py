@@ -1131,6 +1131,7 @@ async def run_agent_stream(
     # For continuations, context is already in conversation history via session resumption
     context_section = ""
     if not is_continuation and intelligent_context:
+        print(f'This is the given context {intelligent_context}')
         context_section = f"""
 ## Retrieved Context
 The following information was retrieved from your documents based on the form fields and instructions:
@@ -1277,8 +1278,8 @@ Start by loading the PDF, then list the fields, fill them according to the instr
     print(f"  Output tokens: {total_output_tokens}")
 
     # Save session state to database for persistence across server restarts
-    # Use default test user for now (TODO: get from auth)
-    save_user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
+    # Note: user_id must exist in users table; user_session_id is only for session tracking
+    save_user_id = "00000000-0000-0000-0000-000000000001"
     _session_manager.save_session(session, save_user_id)
 
     # Yield final summary with applied edits and session_id for multi-turn tracking
@@ -1395,7 +1396,8 @@ Start by loading the PDF, then list the fields, fill them according to the instr
                 del os_module.environ["ANTHROPIC_API_KEY"]
 
     # Save session state to database for persistence across server restarts
-    save_user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
+    # Note: user_id must exist in users table; user_session_id is only for session tracking
+    save_user_id = "00000000-0000-0000-0000-000000000001"
     _session_manager.save_session(session, save_user_id)
 
     return {

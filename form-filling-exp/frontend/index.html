@@ -707,6 +707,9 @@
         let currentFile = null;
         let contextFiles = [];
         
+        // Generate a UUID for the user session (required by Supabase for context storage)
+        let userSessionId = crypto.randomUUID();
+        
         // Get selected mode
         function getMode() {
             return document.querySelector('input[name="mode"]:checked').value;
@@ -999,6 +1002,7 @@
             const formData = new FormData();
             formData.append('file', currentFile);
             formData.append('instructions', instructions.value);
+            formData.append('user_session_id', userSessionId);
             
             // Append context files if any
             if (contextFiles.length > 0) {
@@ -1292,4 +1296,3 @@
     </script>
 </body>
 </html>
-

@@ -108,17 +108,17 @@ app.add_middleware(
 # Helper Functions
 # ============================================================================
 
-async def check_user_has_documents(user_id: str, session_id: str) -> bool:
+async def check_user_has_documents(user_id: str, session_id: Optional[str] = None) -> bool:
     """
     Check if user has any documents (ephemeral or global KB).
     
     Returns True if:
-    - User has ephemeral docs for this session_id, OR
+    - User has ephemeral docs for this session_id (if valid UUID provided), OR
     - User has documents in global knowledge base
     
     Args:
         user_id: User UUID
-        session_id: Session UUID for ephemeral docs
+        session_id: Optional session UUID for ephemeral docs (must be valid UUID or None)
         
     Returns:
         True if user has any documents, False otherwise
@@ -128,13 +128,14 @@ async def check_user_has_documents(user_id: str, session_id: str) -> bool:
     try:
         client = get_client_for_user(user_id)
         
-        # Check ephemeral docs for this session
-        ephemeral = client.table("documents").select("id").eq("user_id", user_id).eq("session_id", session_id).limit(1).execute()
-        if ephemeral.data:
-            print(f"[HasDocs] User {user_id} has ephemeral docs for session {session_id}")
-            return True
+        # Check ephemeral docs for this session (only if valid session_id provided)
+        if session_id:
+            ephemeral = client.table("documents").select("id").eq("user_id", user_id).eq("session_id", session_id).limit(1).execute()
+            if ephemeral.data:
+                print(f"[HasDocs] User {user_id} has ephemeral docs for session {session_id}")
+                return True
         
-        # Check global KB (session_id IS NULL)
+        # Always check global KB (session_id IS NULL)
         kb_docs = client.table("documents").select("id").eq("user_id", user_id).is_("session_id", "null").limit(1).execute()
         if kb_docs.data:
             print(f"[HasDocs] User {user_id} has global KB documents")
@@ -599,7 +600,8 @@ async def fill_pdf_agent_stream(
             output_path = tmp_path.replace('.pdf', '_filled.pdf')
 
             # Use default test user for development (TODO: get from auth)
-            user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
+            # Note: user_id must exist in users table; user_session_id is only for ephemeral doc tagging
+            user_id = "00000000-0000-0000-0000-000000000001"
 
             # PRE-AGENT PROCESSING: Context generation
             intelligent_context = None
@@ -631,7 +633,8 @@ async def fill_pdf_agent_stream(
                 print(f"[FillAgentStream] Detected {len(fields)} form fields")
                 
                 # 3. Check if user has any documents (ephemeral or KB)
-                has_documents = await check_user_has_documents(user_id, user_session_id or "temp-session")
+                print(f"[FillAgentStream] Checking docs for user_id={user_id}, user_session_id={user_session_id}")
+                has_documents = await check_user_has_documents(user_id, user_session_id)
                 
                 # 4. Generate intelligent context if documents exist
                 if has_documents:
@@ -650,7 +653,7 @@ async def fill_pdf_agent_stream(
                     # Perform waterfall search
                     waterfall_results = await waterfall_search(
                         user_id=user_id,
-                        session_id=user_session_id or "temp-session",
+                        session_id=user_session_id,
                         field_queries=field_queries,
                         similarity_threshold=0.7
                     )
