@@ -789,10 +789,6 @@ async def parse_context_files(
     if len(files) == 0:
         raise HTTPException(status_code=400, detail="At least one file is required")
 
-    # Validate parse mode
-    if parse_mode not in ("cost_effective", "agentic_plus"):
-        raise HTTPException(status_code=400, detail="Invalid parse_mode. Use 'cost_effective' or 'agentic_plus'")
-
     # Check if Docling is available for files that need it
     files_needing_parse = [f for f in files if needs_parsing(f.filename or "")]
     if files_needing_parse and not DOCLING_AVAILABLE:
