@@ -178,7 +178,7 @@ export default function Home() {
 
   // Handle parsing context files
   const handleParseFiles = useCallback(
-    async (files: File[], parseMode: 'cost_effective' | 'agentic_plus') => {
+    async (files: File[]) => {
       setIsUploadingContext(true);
       setParseProgress(null);
 
@@ -193,7 +193,7 @@ export default function Home() {
       try {
         const results: ContextFile[] = [];
 
-        for await (const event of streamParseFiles(files, parseMode, currentUserSessionId)) {
+        for await (const event of streamParseFiles(files, currentUserSessionId)) {
           if (event.type === 'progress' && event.current !== undefined && event.total !== undefined && event.filename && event.status) {
             setParseProgress({
               current: event.current,

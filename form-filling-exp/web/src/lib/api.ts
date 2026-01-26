@@ -240,7 +240,6 @@ export interface ParseFilesProgress {
 
 export async function* streamParseFiles(
   files: File[],
-  parseMode: 'cost_effective' | 'agentic_plus',
   userSessionId?: string | null
 ): AsyncGenerator<ParseFilesProgress> {
   const formData = new FormData();
@@ -248,7 +247,6 @@ export async function* streamParseFiles(
   for (const file of files) {
     formData.append('files', file);
   }
-  formData.append('parse_mode', parseMode);
 
   if (userSessionId) {
     formData.append('user_session_id', userSessionId);

@@ -13,7 +13,7 @@ interface ChatPanelProps {
   statusMessage?: string;
   contextFiles?: ContextFile[];
   onContextFilesChange?: (files: ContextFile[]) => void;
-  onParseFiles?: (files: File[], parseMode: 'cost_effective' | 'agentic_plus') => Promise<void>;
+  onParseFiles?: (files: File[]) => Promise<void>;
   isUploadingContext?: boolean;
   parseProgress?: ParseProgress | null;
 }
