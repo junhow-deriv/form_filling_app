@@ -30,3 +30,6 @@ openai
 
 # Environment variables
 python-dotenv
+
+# Tiktoken (for chunking)
+tiktoken==0.12.0

@@ -7,10 +7,10 @@ This module provides:
 3. Vector similarity search
 
 Placeholder sections (TODO for teammate):
-- Document text extraction (uses parser.py)
 - Document chunking strategy
 
 Implemented sections:
+- Document text extraction (uses parser.py)
 - Embedding generation
 - Vector search
 - Database integration
@@ -18,9 +18,13 @@ Implemented sections:
 
 import os
 from typing import Optional, List
+import tiktoken
 from openai import AsyncOpenAI
 from database.supabase_client import get_client_for_user, get_supabase_client
 from storage.storage_service import calculate_file_hash
+from parser import parse_file
+
+
 
 
 # OpenAI client for embeddings
@@ -29,9 +33,6 @@ _openai_client: Optional[AsyncOpenAI] = None
 # Embedding model configuration
 EMBEDDING_MODEL = "text-embedding-ada-002"  # 1536 dimensions
 EMBEDDING_DIMENSIONS = 1536
-
-# TODO: Import from teammate's extraction module when ready
-# from extraction.document_extractor import extract_text_from_file
 
 
 def get_openai_client() -> AsyncOpenAI:
@@ -45,6 +46,7 @@ def get_openai_client() -> AsyncOpenAI:
                 "Set it in your .env file for embedding generation."
             )
         _openai_client = AsyncOpenAI(api_key=api_key, base_url="https://litellm.deriv.ai/v1")
+        _openai_client = AsyncOpenAI(api_key=api_key,base_url="https://litellm.deriv.ai/v1")
     return _openai_client
 
 
@@ -99,71 +101,87 @@ async def generate_single_embedding(text: str) -> List[float]:
 
 
 # ============================================================================
-# Document Extraction (TODO - PLACEHOLDER)
+# Document Extraction
 # ============================================================================
 
 async def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
     """
-    Extract text from a file.
+    Extract text from a file using the parser module.
     
-    TODO: This is a placeholder. Your teammate should implement:
-    1. Use parser.py for LlamaParse integration
-    2. Handle different file types (PDF, DOCX, PPTX, images)
-    3. Use OCR for images if needed
-    4. Return clean, formatted text
+    This function first checks the file extension:
+    1. If it's a simple text format (txt, md, json, etc.), it decodes and returns the text directly.
+    2. If it's a complex format (PDF, DOCX, PPTX, images), it uses Docling to parse and convert the content into Markdown.
     
     Args:
         file_bytes: File content as bytes
         filename: Original filename (for type detection)
         
     Returns:
-        Extracted text content
+        Extracted text content (raw text or Markdown)
     """
-    # PLACEHOLDER: Return empty string for now
-    # Your teammate will implement this using parser.py
-    print(f"[Extraction] TODO: Extract text from {filename}")
-    return "[Text extraction not yet implemented - to be added by teammate]"
+    print(f"[Extraction] Extracting text from {filename}...")
+    try:
+        # Use the parser module to extract text
+        text = await parse_file(file_bytes, filename)
+        print(f"[Extraction] Successfully extracted {len(text)} chars from {filename}")
+        return text
+    except Exception as e:
+        print(f"[Extraction] Failed to extract text from {filename}: {e}")
+        # Return error message so it's visible in the system that extraction failed
+        return f"[FAILED TO EXTRACT TEXT: {str(e)}]"
 
 
 # ============================================================================
 # Document Chunking (TODO - PLACEHOLDER)
 # ============================================================================
 
-async def chunk_document(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[dict]:
+async def chunk_document(text: str, filename: str, chunk_size: int = 1000, overlap: int = 200) -> List[dict]:
     """
-    Split document text into chunks for embedding.
-    
-    TODO: This is a placeholder. Your teammate should implement:
-    1. Use semantic chunking (e.g., LangChain's RecursiveCharacterTextSplitter)
-    2. Respect document structure (paragraphs, sections)
-    3. Add metadata (page numbers, section titles)
-    4. Handle tables and lists appropriately
+    Split document text into chunks for embedding using tiktoken.
     
     Args:
         text: Full document text
-        chunk_size: Target chunk size in characters
-        overlap: Overlap between chunks
+        filename: Original filename
+        chunk_size: Target chunk size in tokens
+        overlap: Overlap between chunks in tokens
         
     Returns:
         List of chunk dicts with 'text' and 'metadata' keys
     """
-    # PLACEHOLDER: Simple naive chunking for now
-    # Your teammate will replace this with proper semantic chunking
-    print(f"[Chunking] TODO: Implement proper document chunking")
-    
-    if not text or len(text) < chunk_size:
-        return [{"text": text, "metadata": {"chunk_index": 0}}]
-    
-    # Very basic chunking (teammate will improve this)
+    # Use cl100k_base encoding (used by gpt-4, gpt-3.5-turbo, text-embedding-ada-002)
+    encoding = tiktoken.get_encoding("cl100k_base")
+    tokens = encoding.encode(text)
+    num_tokens = len(tokens)
+    print(f"[Chunking] Document has {num_tokens} tokens")
     chunks = []
-    for i in range(0, len(text), chunk_size - overlap):
-        chunk_text = text[i:i + chunk_size]
-        chunks.append({
-            "text": chunk_text,
-            "metadata": {"chunk_index": len(chunks)}
-        })
+    start = 0
     
-    print(f"[Chunking] Created {len(chunks)} chunks (BASIC IMPLEMENTATION - NEEDS IMPROVEMENT)")
+    # If the document is empty, return no chunks
+    if num_tokens == 0:
+        return []
+        
+    # Calculate step size (sliding window)
+    step = chunk_size - overlap
+    if step <= 0:
+        step = 1  # Ensure we always move forward
+
+    chunk_idx = 0
+    for start in range(0, num_tokens, step):
+        end = min(start + chunk_size, num_tokens)
+        chunk_tokens = tokens[start:end]
+        chunk_text = encoding.decode(chunk_tokens)
+        
+        chunks.append({
+            "metadata": {"chunk_index": chunk_idx, "filename": filename, "chunk_token_count": len(chunk_tokens)},
+            "text": chunk_text
+        })
+        chunk_idx += 1
+        
+        # If we reached the end, break
+        if end == num_tokens:
+            break
+        
+    print(f"[Chunking] Created {len(chunks)} chunks using tiktoken (size={chunk_size}, overlap={overlap})")
     return chunks
 
 
@@ -236,7 +254,7 @@ async def store_document(
     print(f"[Store] Created document: {document_id} ({source_type})")
     
     # Chunk the text (TODO: teammate will implement proper chunking)
-    chunks = await chunk_document(raw_text)
+    chunks = await chunk_document(raw_text, filename)
     
     if not chunks:
         print(f"[Store] No chunks created for document {document_id}")
@@ -606,18 +624,20 @@ if __name__ == "__main__":
     import asyncio
     
     async def test():
-        print("Embedding Service Test")
-        print("=" * 50)
+        # print("Embedding Service Test")
+        # print("=" * 50)
         
-        # Test embedding generation
-        test_texts = ["Hello, world!", "This is a test document."]
-        embeddings = await generate_embeddings(test_texts)
-        print(f"Generated {len(embeddings)} embeddings")
-        print(f"Embedding dimension: {len(embeddings[0])}")
+        # # Test embedding generation
+        # test_texts = ["Hello, world!", "This is a test document."]
+        # embeddings = await generate_embeddings(test_texts)
+        # print(f"Generated {len(embeddings)} embeddings")
+        # print(f"Embedding dimension: {len(embeddings[0])}")
         
-        # Test chunking (placeholder)
-        # test_text = "This is a long document. " * 100
-        # chunks = await chunk_document(test_text, chunk_size=100)
-        # print(f"Created {len(chunks)} chunks")
-    
+        # Test chunking
+        test_text_2 = "This is a long document. " * 100
+        # Using chunk_size=100 and overlap=50 to demonstrate sliding window
+        chunks = await chunk_document(test_text_2, "test_doc.txt", chunk_size=100, overlap=50)
+        print(f"Created {len(chunks)} chunks")
+        print(chunks)
+
     asyncio.run(test())
