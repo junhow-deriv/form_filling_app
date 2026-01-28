@@ -18,6 +18,7 @@ The single-shot /fill endpoint is maintained for backwards compatibility.
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -520,7 +521,7 @@ import asyncio
 async def fill_pdf_agent_stream(
     file: UploadFile = File(...),
     instructions: str = Form(...),
-    context_files: Optional[list[UploadFile]] = File(None),  # Optional context file uploads
+    context_file_ids: Optional[str] = Form(None),  # JSON array of document IDs from /parse-files
     max_iterations: int = Form(20),
     is_continuation: bool = Form(False),
     previous_edits: Optional[str] = Form(None),  # JSON string of field_id -> value
@@ -532,11 +533,14 @@ async def fill_pdf_agent_stream(
     Fill a PDF form using agent mode with real-time streaming.
 
     Returns Server-Sent Events (SSE) stream with agent messages.
+    
+    **Context Files**: Must be pre-uploaded via /parse-files endpoint.
+    Pass the returned document IDs as a JSON array in context_file_ids parameter.
 
     Args:
         file: The PDF file to fill. For continuations, this should be the already-filled PDF.
         instructions: Natural language instructions for this turn
-        context_files: Optional context files to parse and embed (creates ephemeral embeddings)
+        context_file_ids: JSON array of document IDs from /parse-files (e.g., '["uuid1", "uuid2"]')
         is_continuation: Set to true for multi-turn conversations (subsequent messages)
         previous_edits: JSON string of {field_id: value} from previous turns
         resume_session_id: Session ID from previous turn to resume conversation context
@@ -553,6 +557,8 @@ async def fill_pdf_agent_stream(
     - pdf_ready: Final summary with filled PDF (hex-encoded)
     - error: Error occurred
     """
+    start_time = time.time()
+
     if not file.filename.lower().endswith('.pdf'):
         async def error_stream():
             yield f"data: {json.dumps({'type': 'error', 'error': 'File must be a PDF'})}\n\n"
@@ -591,58 +597,63 @@ async def fill_pdf_agent_stream(
         cont_msg = " (continuation)" if is_continuation else ""
         yield f"data: {json.dumps({'type': 'init', 'message': f'Stream connected, initializing agent{cont_msg}...'})}\n\n"
 
+        # Use default test user for development (TODO: get from auth)
+        user_id = "00000000-0000-0000-0000-000000000001"
+
         try:
+            pdf_to_use = pdf_bytes
+            
+            if is_continuation and user_session_id:
+                # For continuations, load the previously filled PDF from session storage
+                session_check = _session_manager.get_session(user_session_id, user_id)
+                if session_check and session_check.current_pdf_bytes:
+                    pdf_to_use = session_check.current_pdf_bytes
+                    print(f"[FillAgentStream] ✅ Using stored filled PDF from session ({len(pdf_to_use)} bytes)")
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'Loaded previously filled PDF from session...'})}\n\n"
+                else:
+                    print(f"[FillAgentStream] ⚠️ WARNING: Continuation requested but no stored PDF found, using uploaded PDF")
+                    yield f"data: {json.dumps({'type': 'warning', 'message': 'No previous PDF found in session, using uploaded PDF'})}\n\n"
+            else:
+                print(f"[FillAgentStream] Using uploaded PDF ({len(pdf_to_use)} bytes)")
+            
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                tmp.write(pdf_bytes)
+                tmp.write(pdf_to_use)
                 tmp_path = tmp.name
 
             output_path = tmp_path.replace('.pdf', '_filled.pdf')
-
-            # Use default test user for development (TODO: get from auth)
-            user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
 
             # PRE-AGENT PROCESSING: Context generation
             intelligent_context = None
             
             if not is_continuation:
-                # 1. Handle context file uploads (if provided)
-                uploaded_doc_ids = []
-                if context_files:
-                    yield f"data: {json.dumps({'type': 'status', 'message': f'Processing {len(context_files)} context file(s)...'})}\n\n"
-                    for cf in context_files:
-                        try:
-                            cf_bytes = await cf.read()
-                            doc_id = await store_document(
-                                user_id=user_id,
-                                filename=cf.filename,
-                                file_bytes=cf_bytes,
-                                session_id=user_session_id,  # Tag as ephemeral
-                                metadata={"source": "form_context_upload"}
-                            )
-                            uploaded_doc_ids.append(doc_id)
-                            print(f"[FillAgentStream] Uploaded context file: {cf.filename} -> {doc_id}")
-                        except Exception as e:
-                            print(f"[FillAgentStream] Error uploading context file {cf.filename}: {e}")
-                            yield f"data: {json.dumps({'type': 'warning', 'message': f'Failed to process {cf.filename}: {str(e)}'})}\n\n"
-                
-                # 2. Detect form fields BEFORE starting agent
+                # 1. Detect form fields BEFORE starting agent
                 yield f"data: {json.dumps({'type': 'status', 'message': 'Detecting form fields...'})}\n\n"
                 fields = detect_form_fields(pdf_bytes)
                 print(f"[FillAgentStream] Detected {len(fields)} form fields")
                 
-                # 3. Check if user has any documents (ephemeral or KB)
-                has_documents = await check_user_has_documents(user_id, user_session_id or "temp-session")
+                # 2. Check if user has any documents (ephemeral or KB)
+                has_documents = await check_user_has_documents(user_id, user_session_id)
                 
-                # 4. Generate intelligent context if documents exist
+                # 3. Generate intelligent context if documents exist
                 if has_documents:
                     yield f"data: {json.dumps({'type': 'status', 'message': 'Generating search queries for form fields...'})}\n\n"
+                    
+                    # Parse context_file_ids if provided
+                    has_uploaded_docs = False
+                    if context_file_ids:
+                        try:
+                            doc_ids = json.loads(context_file_ids)
+                            has_uploaded_docs = len(doc_ids) > 0
+                            print(f"[FillAgentStream] Using {len(doc_ids)} pre-uploaded document(s)")
+                        except json.JSONDecodeError:
+                            print(f"[FillAgentStream] Failed to parse context_file_ids: {context_file_ids}")
                     
                     # Generate queries
                     field_queries = await generate_field_queries(
                         form_fields=fields,
                         user_instructions=instructions,
                         anthropic_api_key=anthropic_api_key,
-                        has_uploaded_docs=len(uploaded_doc_ids) > 0
+                        has_uploaded_docs=has_uploaded_docs
                     )
                     
                     yield f"data: {json.dumps({'type': 'status', 'message': 'Searching documents for relevant information...'})}\n\n"
@@ -650,7 +661,7 @@ async def fill_pdf_agent_stream(
                     # Perform waterfall search
                     waterfall_results = await waterfall_search(
                         user_id=user_id,
-                        session_id=user_session_id or "temp-session",
+                        session_id=user_session_id,
                         field_queries=field_queries,
                         similarity_threshold=0.7
                     )
@@ -695,6 +706,10 @@ async def fill_pdf_agent_stream(
                 yield f"data: {json.dumps({'type': 'pdf_ready', 'pdf_bytes': pdf_hex})}\n\n"
             else:
                 yield f"data: {json.dumps({'type': 'error', 'error': 'No output PDF generated'})}\n\n"
+            
+            end_time = time.time()
+            yield f"data: {json.dumps({'type': 'status', 'message': f'Stream completed in {end_time - start_time:.2f} seconds'})}\n\n"
+            print(f"[FillAgentStream] Stream completed in {end_time - start_time:.2f} seconds")
                 
         except ValueError as e:
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
@@ -788,10 +803,6 @@ async def parse_context_files(
 
     if len(files) == 0:
         raise HTTPException(status_code=400, detail="At least one file is required")
-
-    # Validate parse mode
-    if parse_mode not in ("cost_effective", "agentic_plus"):
-        raise HTTPException(status_code=400, detail="Invalid parse_mode. Use 'cost_effective' or 'agentic_plus'")
 
     # Check if Docling is available for files that need it
     files_needing_parse = [f for f in files if needs_parsing(f.filename or "")]
@@ -895,6 +906,87 @@ async def parse_context_files(
     )
 
 
+# ============================================================================
+# Session Restoration Endpoints
+# ============================================================================
+
+@app.get("/session/{session_id}")
+async def get_session_info(session_id: str):
+    """
+    Get session metadata for restoration after page reload.
+    
+    Returns session state including agent_session_id, applied_edits,
+    and availability of PDF files.
+    """
+    # Use default test user for development (TODO: get from auth)
+    user_id = "00000000-0000-0000-0000-000000000001"
+    
+    session = _session_manager.get_session(session_id, user_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Get agent_session_id from database
+    from database.supabase_client import get_client_for_user
+    client = get_client_for_user(user_id)
+    result = client.table("form_states").select("agent_session_id").eq("session_id", session_id).eq("user_id", user_id).execute()
+    agent_session_id = result.data[0].get('agent_session_id') if result.data else None
+    
+    return {
+        "session_id": session.session_id,
+        "user_session_id": session.session_id,
+        "agent_session_id": agent_session_id,
+        "has_filled_pdf": session.current_pdf_bytes is not None,
+        "has_original_pdf": session.original_pdf_bytes is not None,
+        "applied_edits": session.applied_edits or {},
+    }
+
+
+@app.get("/session/{session_id}/pdf")
+async def get_session_pdf(session_id: str):
+    """
+    Retrieve the filled PDF for a session.
+    
+    Returns PDF bytes for displaying the current state of the form.
+    """
+    # Use default test user for development (TODO: get from auth)
+    user_id = "00000000-0000-0000-0000-000000000001"
+    
+    pdf_bytes = _session_manager.get_session_pdf_bytes(session_id, user_id)
+    if not pdf_bytes:
+        raise HTTPException(status_code=404, detail="Session not found or no PDF available")
+    
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=session_{session_id}.pdf"
+        }
+    )
+
+
+@app.get("/session/{session_id}/original-pdf")
+async def get_session_original_pdf(session_id: str):
+    """
+    Retrieve the original (unfilled) PDF for a session.
+    
+    Allows toggling between original and filled views.
+    """
+    # Use default test user for development (TODO: get from auth)
+    user_id = "00000000-0000-0000-0000-000000000001"
+    
+    pdf_bytes = _session_manager.get_session_original_pdf_bytes(session_id, user_id)
+    if not pdf_bytes:
+        raise HTTPException(status_code=404, detail="Session not found or no original PDF available")
+    
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=session_{session_id}_original.pdf"
+        }
+    )
+
+
 @app.get("/parse-status")
 async def get_parse_status():
     """Check if Docling is available."""
@@ -967,109 +1059,6 @@ async def validate_anthropic_key(api_key: str = Form(...)):
             status_code=500,
             detail=f"Failed to connect to Anthropic: {str(e)}"
         )
-
-
-# ============================================================================
-# Session PDF Retrieval
-# ============================================================================
-
-@app.get("/session/{session_id}/pdf")
-async def get_session_pdf(session_id: str):
-    """
-    Retrieve the filled PDF for a session.
-
-    This allows the frontend to restore the PDF when a user returns to a session.
-    Returns the PDF bytes as a file response.
-    """
-    pdf_bytes = _session_manager.get_session_pdf_bytes(session_id)
-    if not pdf_bytes:
-        raise HTTPException(status_code=404, detail="Session not found or no PDF available")
-
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"inline; filename=session_{session_id}.pdf"
-        }
-    )
-
-
-@app.get("/session/{session_id}/original-pdf")
-async def get_session_original_pdf(session_id: str):
-    """
-    Retrieve the original (unfilled) PDF for a session.
-
-    This allows the frontend to show both original and filled views when restoring a session.
-    Returns the PDF bytes as a file response.
-    """
-    pdf_bytes = _session_manager.get_session_original_pdf_bytes(session_id)
-    if not pdf_bytes:
-        raise HTTPException(status_code=404, detail="Session not found or no original PDF available")
-
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"inline; filename=session_{session_id}_original.pdf"
-        }
-    )
-
-
-@app.get("/session/{session_id}")
-async def get_session_info(session_id: str):
-    """
-    Get session metadata (without PDF bytes).
-
-    Returns applied edits and whether PDFs are available.
-    """
-    session = _session_manager.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    # Get context files info (without full content)
-    context_files_info = []
-    if session.context_files:
-        for cf in session.context_files:
-            if isinstance(cf, dict):
-                context_files_info.append({
-                    "filename": cf.get("filename", "unknown"),
-                    "was_parsed": cf.get("was_parsed", False),
-                    "content_length": len(cf.get("content", ""))
-                })
-            else:
-                context_files_info.append({
-                    "filename": getattr(cf, "filename", "unknown"),
-                    "was_parsed": getattr(cf, "was_parsed", False),
-                    "content_length": len(getattr(cf, "content", ""))
-                })
-
-    return {
-        "session_id": session.session_id,
-        "has_pdf": session.current_pdf_bytes is not None,
-        "has_original_pdf": session.original_pdf_bytes is not None,
-        "applied_edits": session.applied_edits,
-        "field_count": len(session.applied_edits) if session.applied_edits else 0,
-        "context_files": context_files_info,
-        "context_files_count": len(context_files_info),
-    }
-
-
-@app.get("/session/{session_id}/context-files")
-async def get_session_context_files(session_id: str):
-    """
-    Get the full context files for a session.
-
-    Returns the list of context files with their full content.
-    """
-    context_files = _session_manager.get_session_context_files(session_id)
-    if context_files is None:
-        raise HTTPException(status_code=404, detail="Session not found or no context files")
-
-    return {
-        "session_id": session_id,
-        "context_files": context_files,
-    }
-
 
 # ============================================================================
 # Run directly for development

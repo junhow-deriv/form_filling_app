@@ -2,24 +2,21 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { ChatMessage, FormField, PdfDisplayMode, StreamEvent, AgentLogEntry } from '@/types';
-import { analyzePdf, streamAgentFill, hexToBytes, getSessionPdf, getSessionOriginalPdf, streamParseFiles, getSessionContextFiles } from '@/lib/api';
+import { analyzePdf, streamAgentFill, hexToBytes, streamParseFiles, getSessionInfo, getSessionPdf, getSessionOriginalPdf } from '@/lib/api';
 import { ContextFile, ParseProgress } from '@/components/ContextFilesUpload';
 import {
   createSession,
   createMessage,
   getSessionIdFromUrl,
   setSessionIdInUrl,
-  saveSessionToStorage,
-  loadSessionFromStorage,
 } from '@/lib/session';
 import LeftPanel from '@/components/LeftPanel';
 import ChatPanel from '@/components/ChatPanel';
 // Helper to generate unique IDs
-const generateId = () => Math.random().toString(36).substring(2, 11);
+const generateId = () => crypto.randomUUID();
 
 export default function Home() {
   // API keys (handled by backend env vars)
-  const [llamaApiKey] = useState<string | null>(null);
   const [anthropicApiKey] = useState<string | null>(null);
 
   const [sessionId, setSessionId] = useState<string>('');
@@ -48,81 +45,61 @@ export default function Home() {
     const urlSessionId = getSessionIdFromUrl();
 
     if (urlSessionId) {
-      // Try to load existing session
-      const stored = loadSessionFromStorage(urlSessionId);
-      console.log('[DEBUG] Loading session from storage:', {
-        urlSessionId,
-        stored: stored ? { hasFields: stored.fields?.length, hasMessages: stored.messages?.length, userSessionId: stored.userSessionId } : null,
-      });
-      if (stored) {
-        setSessionId(urlSessionId);
-        setFields(stored.fields || []);
-        setMessages(stored.messages || []);
-
-        // If we have a userSessionId, try to fetch both PDFs from backend
-        if (stored.userSessionId) {
-          console.log('[DEBUG] Fetching PDFs from backend for userSessionId:', stored.userSessionId);
-          setUserSessionId(stored.userSessionId);
-
-          // Fetch both original and filled PDFs and context files in parallel
-          Promise.all([
-            getSessionPdf(stored.userSessionId),
-            getSessionOriginalPdf(stored.userSessionId),
-            getSessionContextFiles(stored.userSessionId),
-          ]).then(([filledBytes, originalBytes, contextFilesData]) => {
-            console.log('[DEBUG] Session fetch results:', {
-              hasFilledBytes: !!filledBytes,
-              filledSize: filledBytes?.length,
-              hasOriginalBytes: !!originalBytes,
-              originalSize: originalBytes?.length,
-              contextFilesCount: contextFilesData?.length,
-            });
-            if (filledBytes) {
-              setFilledPdfBytes(filledBytes);
-              setPdfDisplayMode('filled');
-            }
-            if (originalBytes) {
-              setOriginalPdfBytes(originalBytes);
-            }
-            if (contextFilesData) {
-              setContextFiles(contextFilesData.map(f => ({
-                filename: f.filename,
-                content: f.content,
-                was_parsed: f.was_parsed,
-              })));
-            }
-          });
+      // Use existing session ID from URL for both frontend and backend
+      // This is the unified session ID that maps to form_states.session_id
+      setSessionId(urlSessionId);
+      setUserSessionId(urlSessionId); // ✅ Unified ID
+      
+      // Fetch session data from backend
+      getSessionInfo(urlSessionId).then(async (sessionData) => {
+        if (sessionData) {
+          console.log('[Session Restore] Found session data:', sessionData);
+          
+          // Restore session state
+          setAgentSessionId(sessionData.agent_session_id);
+          setAppliedEdits(sessionData.applied_edits);
+          
+          // Fetch PDFs in parallel
+          const promises: Promise<void>[] = [];
+          
+          if (sessionData.has_filled_pdf) {
+            promises.push(
+              getSessionPdf(urlSessionId).then(bytes => {
+                if (bytes) {
+                  console.log('[Session Restore] Restored filled PDF:', bytes.length, 'bytes');
+                  setFilledPdfBytes(bytes);
+                  setPdfDisplayMode('filled');
+                }
+              })
+            );
+          }
+          
+          if (sessionData.has_original_pdf) {
+            promises.push(
+              getSessionOriginalPdf(urlSessionId).then(bytes => {
+                if (bytes) {
+                  console.log('[Session Restore] Restored original PDF:', bytes.length, 'bytes');
+                  setOriginalPdfBytes(bytes);
+                }
+              })
+            );
+          }
+          
+          await Promise.all(promises);
+          console.log('[Session Restore] Session fully restored');
+        } else {
+          console.log('[Session Restore] No session data found for:', urlSessionId);
         }
-      } else {
-        // Session not found, create new one
-        const session = createSession();
-        setSessionId(session.id);
-        setSessionIdInUrl(session.id);
-      }
+      }).catch(err => {
+        console.error('[Session Restore] Failed to restore session:', err);
+      });
     } else {
-      // No session in URL, create new one
-      const session = createSession();
-      setSessionId(session.id);
-      setSessionIdInUrl(session.id);
+      const unifiedSessionId = generateId();
+      setSessionId(unifiedSessionId);
+      setUserSessionId(unifiedSessionId);
+      setSessionIdInUrl(unifiedSessionId);
     }
   }, []);
-
-  // Save session to storage when it changes
-  useEffect(() => {
-    if (sessionId) {
-      saveSessionToStorage(
-        {
-          id: sessionId,
-          originalPdf: file,
-          filledPdfBytes,
-          fields,
-          messages,
-          isProcessing,
-        },
-        userSessionId
-      );
-    }
-  }, [sessionId, fields, messages, file, filledPdfBytes, isProcessing, userSessionId]);
 
   // Handle file selection and analysis
   const handleFileSelect = useCallback(async (selectedFile: File | null) => {
@@ -178,22 +155,22 @@ export default function Home() {
 
   // Handle parsing context files
   const handleParseFiles = useCallback(
-    async (files: File[], parseMode: 'cost_effective' | 'agentic_plus') => {
+    async (files: File[]) => {
       setIsUploadingContext(true);
       setParseProgress(null);
 
-      // Generate a userSessionId if one doesn't exist yet
-      // This ensures context files can be stored in the backend session
+      // Use existing session ID (already unified with backend)
+      // If for some reason it doesn't exist, use the frontend sessionId
       let currentUserSessionId = userSessionId;
       if (!currentUserSessionId) {
-        currentUserSessionId = generateId() + '-' + Date.now();
+        currentUserSessionId = sessionId;
         setUserSessionId(currentUserSessionId);
       }
 
       try {
         const results: ContextFile[] = [];
 
-        for await (const event of streamParseFiles(files, parseMode, currentUserSessionId)) {
+        for await (const event of streamParseFiles(files, currentUserSessionId)) {
           if (event.type === 'progress' && event.current !== undefined && event.total !== undefined && event.filename && event.status) {
             setParseProgress({
               current: event.current,
@@ -215,11 +192,10 @@ export default function Home() {
 
           if (event.type === 'complete' && event.results) {
             for (const result of event.results) {
-              if (result.content && !result.error) {
+              if (result.success && result.document_id) {
                 results.push({
                   filename: result.filename,
-                  content: result.content,
-                  was_parsed: result.parsed,
+                  document_id: result.document_id,
                 });
               }
             }
@@ -239,7 +215,7 @@ export default function Home() {
         setParseProgress(null);
       }
     },
-    [userSessionId, llamaApiKey]
+    [userSessionId, sessionId]
   );
 
   // Handle sending a chat message
@@ -274,7 +250,6 @@ export default function Home() {
       let appliedCount = 0;
       let newAppliedEdits: Record<string, unknown> | null = null;
       let newAgentSessionId: string | null = null;
-      let newUserSessionId: string | null = null;
       let newFilledPdfBytes: Uint8Array | null = null;
 
       try {
@@ -287,6 +262,7 @@ export default function Home() {
           resumeSessionId: agentSessionId,
           userSessionId: userSessionId,
           anthropicApiKey: anthropicApiKey,
+          contextFileIds: contextFiles.length > 0 ? contextFiles : undefined,
         })) {
           const logEntry = createLogEntry(event);
 
@@ -321,10 +297,6 @@ export default function Home() {
             if (event.session_id) {
               newAgentSessionId = event.session_id;
             }
-            // Track user session ID for backend state isolation
-            if (event.user_session_id) {
-              newUserSessionId = event.user_session_id;
-            }
             const totalEdits = newAppliedEdits ? Object.keys(newAppliedEdits).length : appliedCount;
             if (isContinuation) {
               finalContent = `Updated ${appliedCount} fields. Total: ${totalEdits} fields filled.`;
@@ -353,30 +325,6 @@ export default function Home() {
         // Update agent session ID for multi-turn conversations
         if (newAgentSessionId) {
           setAgentSessionId(newAgentSessionId);
-        }
-
-        // Update user session ID for backend state isolation
-        // IMPORTANT: Save to localStorage immediately to ensure it persists even if the tab is closed quickly
-        if (newUserSessionId) {
-          console.log('[DEBUG] Saving userSessionId to localStorage:', {
-            sessionId,
-            newUserSessionId,
-            hasFields: fields.length,
-          });
-          setUserSessionId(newUserSessionId);
-          // Immediate save to localStorage to prevent data loss on quick tab close
-          // Use newFilledPdfBytes since state updates are async
-          saveSessionToStorage(
-            {
-              id: sessionId,
-              originalPdf: file,
-              filledPdfBytes: newFilledPdfBytes || filledPdfBytes,
-              fields,
-              messages,
-              isProcessing: false,
-            },
-            newUserSessionId
-          );
         }
 
         // Mark assistant message as complete
@@ -420,7 +368,7 @@ export default function Home() {
         setStatusMessage('');
       }
     },
-    [file, filledPdfBytes, appliedEdits, agentSessionId, userSessionId, sessionId, fields, messages, anthropicApiKey]
+    [file, filledPdfBytes, appliedEdits, agentSessionId, userSessionId, sessionId, fields, messages, anthropicApiKey, contextFiles]
   );
 
   return (

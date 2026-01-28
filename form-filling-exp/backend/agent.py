@@ -89,8 +89,6 @@ class FormFillingSession:
         self.original_pdf_bytes: bytes | None = None
         # Track if this is a continuation
         self.is_continuation: bool = False
-        # Context files parsed with LlamaParse (list of ParsedFile-like dicts)
-        self.context_files: list = []
         # Anthropic API key for this session (user-provided)
         self.anthropic_api_key: str | None = None
 
@@ -107,7 +105,6 @@ class FormFillingSession:
         self.current_pdf_bytes = None
         self.original_pdf_bytes = None
         self.is_continuation = False
-        # Don't clear context_files on reset - they persist across form operations
 
     def soft_reset(self):
         """Reset for a new turn but preserve the filled PDF state."""
@@ -180,7 +177,7 @@ class SessionManager:
             print(f"[SessionManager] Error loading form state {session_id}: {e}")
             return None
 
-    def _save_session_to_db(self, session: FormFillingSession, user_id: str):
+    def _save_session_to_db(self, session: FormFillingSession, user_id: str, agent_session_id: str = None):
         """Save a session to Supabase form_states table (PDF bytes saved to Storage)."""
         try:
             client = get_client_for_user(user_id)
@@ -209,7 +206,7 @@ class SessionManager:
             form_state_data = {
                 "session_id": session.session_id,
                 "user_id": user_id,
-                "agent_session_id": getattr(session, 'agent_session_id', None),
+                "agent_session_id": agent_session_id,
                 "pdf_filename": session.pdf_path,
                 "pdf_storage_path": pdf_storage_path,
                 "original_pdf_storage_path": original_pdf_storage_path,
@@ -279,11 +276,11 @@ class SessionManager:
                 return session
         return self.create_session(session_id, user_id)
 
-    def save_session(self, session: FormFillingSession, user_id: str = None):
+    def save_session(self, session: FormFillingSession, user_id: str = None, agent_session_id: str = None):
         """Explicitly save session state to database."""
         if not user_id:
             user_id = "00000000-0000-0000-0000-000000000001"
-        self._save_session_to_db(session, user_id)
+        self._save_session_to_db(session, user_id, agent_session_id)
 
     def delete_session(self, session_id: str, user_id: str = None) -> bool:
         """Delete a session and clean up resources."""
@@ -359,16 +356,6 @@ class SessionManager:
         
         # Try to load from storage directly
         return download_session_pdf(user_id, session_id, 'original')
-
-    def get_session_context_files(self, session_id: str, user_id: str = None) -> list | None:
-        """Get the context files for a session (for API retrieval)."""
-        if not user_id:
-            user_id = "00000000-0000-0000-0000-000000000001"
-        
-        session = self.get_session(session_id, user_id)
-        if session and session.context_files:
-            return session.context_files
-        return None
 
 
 # Global session manager (replaces the singleton _session)
@@ -1278,8 +1265,8 @@ Start by loading the PDF, then list the fields, fill them according to the instr
 
     # Save session state to database for persistence across server restarts
     # Use default test user for now (TODO: get from auth)
-    save_user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
-    _session_manager.save_session(session, save_user_id)
+    save_user_id = "00000000-0000-0000-0000-000000000001"
+    _session_manager.save_session(session, save_user_id, agent_session_id=agent_session_id)
 
     # Yield final summary with applied edits and session_id for multi-turn tracking
     yield {
@@ -1395,7 +1382,7 @@ Start by loading the PDF, then list the fields, fill them according to the instr
                 del os_module.environ["ANTHROPIC_API_KEY"]
 
     # Save session state to database for persistence across server restarts
-    save_user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
+    save_user_id = "00000000-0000-0000-0000-000000000001"
     _session_manager.save_session(session, save_user_id)
 
     return {
