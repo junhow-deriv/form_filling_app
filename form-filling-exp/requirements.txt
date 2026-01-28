@@ -33,3 +33,7 @@ python-dotenv
 
 # Tiktoken (for chunking)
 tiktoken==0.12.0
+
+# Field Detection
+opencv-python==4.13.0.90
+Pillow==12.1.0
