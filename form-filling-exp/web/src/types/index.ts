@@ -46,7 +46,7 @@ export interface ToolCall {
 
 // Streaming event types from agent
 export interface StreamEvent {
-  type: 'init' | 'status' | 'tool_use' | 'user' | 'assistant' | 'complete' | 'pdf_ready' | 'error';
+  type: 'init' | 'status' | 'tool_use' | 'user' | 'assistant' | 'complete' | 'pdf_ready' | 'error' | 'fields_detected';
   message?: string;
   error?: string;
   text?: string;
@@ -57,6 +57,8 @@ export interface StreamEvent {
   session_id?: string;  // Agent session ID for resuming conversations
   user_session_id?: string;  // User's form-filling session ID (for concurrent user support)
   pdf_bytes?: string;
+  fields?: FormField[];  // Detected form fields (first turn only)
+  field_count?: number;  // Number of fields detected
 }
 
 // Session state

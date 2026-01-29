@@ -16,6 +16,7 @@ interface ChatPanelProps {
   onParseFiles?: (files: File[]) => Promise<void>;
   isUploadingContext?: boolean;
   parseProgress?: ParseProgress | null;
+  shouldDisableContextUpload?: boolean;
 }
 
 export default function ChatPanel({
@@ -29,6 +30,7 @@ export default function ChatPanel({
   onParseFiles,
   isUploadingContext = false,
   parseProgress = null,
+  shouldDisableContextUpload = false,
 }: ChatPanelProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -133,7 +135,7 @@ export default function ChatPanel({
             onParseFiles={onParseFiles}
             isUploading={isUploadingContext}
             parseProgress={parseProgress}
-            disabled={disabled || isProcessing}
+            disabled={disabled || isProcessing || shouldDisableContextUpload}
           />
         </div>
       )}

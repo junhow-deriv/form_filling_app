@@ -39,6 +39,8 @@ export default function Home() {
   const [contextFiles, setContextFiles] = useState<ContextFile[]>([]);
   const [isUploadingContext, setIsUploadingContext] = useState(false);
   const [parseProgress, setParseProgress] = useState<ParseProgress | null>(null);
+  // Track if first agent turn was successful (for continuation logic)
+  const [hasSuccessfulFirstTurn, setHasSuccessfulFirstTurn] = useState(false);
 
   // Initialize session from URL or create new one
   useEffect(() => {
@@ -58,6 +60,13 @@ export default function Home() {
           // Restore session state
           setAgentSessionId(sessionData.agent_session_id);
           setAppliedEdits(sessionData.applied_edits);
+          setFields(sessionData.fields || []);
+          setMessages(sessionData.messages || []);
+          setContextFiles(sessionData.context_files || []);
+          
+          if (sessionData.has_filled_pdf) {
+            setHasSuccessfulFirstTurn(true);
+          }
           
           // Fetch PDFs in parallel
           const promises: Promise<void>[] = [];
@@ -69,6 +78,12 @@ export default function Home() {
                   console.log('[Session Restore] Restored filled PDF:', bytes.length, 'bytes');
                   setFilledPdfBytes(bytes);
                   setPdfDisplayMode('filled');
+                  
+                  // Create File object from filled PDF bytes
+                  if (sessionData.pdf_filename) {
+                    const file = new File([bytes as unknown as Blob], sessionData.pdf_filename, { type: 'application/pdf' });
+                    setFile(file);
+                  }
                 }
               })
             );
@@ -243,8 +258,8 @@ export default function Home() {
       setIsProcessing(true);
       setStatusMessage('Starting agent...');
 
-      // Determine if this is a continuation (we have a previous agent session)
-      const isContinuation = Boolean(agentSessionId && filledPdfBytes);
+      // Determine if this is a continuation (we have a previous successful agent turn)
+      const isContinuation = Boolean(agentSessionId && filledPdfBytes && hasSuccessfulFirstTurn);
 
       let finalContent = '';
       let appliedCount = 0;
@@ -287,6 +302,11 @@ export default function Home() {
           );
 
           // Handle special events
+          if (event.type === 'fields_detected' && event.fields) {
+            setFields(event.fields);
+            setStatusMessage(`Detected ${event.field_count || event.fields.length} form fields`);
+          }
+
           if (event.type === 'complete') {
             appliedCount = event.applied_count || 0;
             // Track all applied edits for multi-turn
@@ -310,6 +330,12 @@ export default function Home() {
             newFilledPdfBytes = bytes;
             setFilledPdfBytes(bytes);
             setPdfDisplayMode('filled');
+            setStatusMessage('PDF filled successfully!');
+            
+            // Mark first turn as successful
+            if (!hasSuccessfulFirstTurn) {
+              setHasSuccessfulFirstTurn(true);
+            }
           }
 
           if (event.type === 'error') {
@@ -421,6 +447,7 @@ export default function Home() {
             onParseFiles={handleParseFiles}
             isUploadingContext={isUploadingContext}
             parseProgress={parseProgress}
+            shouldDisableContextUpload={hasSuccessfulFirstTurn}
           />
         </div>
       </main>

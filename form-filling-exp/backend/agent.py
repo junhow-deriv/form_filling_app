@@ -91,6 +91,8 @@ class FormFillingSession:
         self.is_continuation: bool = False
         # Anthropic API key for this session (user-provided)
         self.anthropic_api_key: str | None = None
+        # Track conversation history for persistence
+        self.messages: list[dict] = []
 
     def reset(self):
         """Reset session state for a new form filling operation."""
@@ -105,12 +107,14 @@ class FormFillingSession:
         self.current_pdf_bytes = None
         self.original_pdf_bytes = None
         self.is_continuation = False
+        self.messages = []
 
     def soft_reset(self):
         """Reset for a new turn but preserve the filled PDF state."""
-        # Keep doc, fields, and current_pdf_bytes
+        # Keep doc, fields, current_pdf_bytes, and messages
         self.pending_edits = {}
         # Don't clear applied_edits - we want to track cumulative changes
+        # Don't clear messages - we want to track conversation history
 
 
 from database.supabase_client import get_client_for_user, get_supabase_client
@@ -177,6 +181,21 @@ class SessionManager:
             print(f"[SessionManager] Error loading form state {session_id}: {e}")
             return None
 
+    def _sanitize_for_postgres(self, data):
+        """
+        Recursively sanitize data to remove null bytes and problematic Unicode characters
+        that PostgreSQL cannot handle in TEXT/JSONB fields.
+        """
+        if isinstance(data, str):
+            # Remove null bytes and other problematic characters
+            return data.replace('\x00', '').replace('\u0000', '')
+        elif isinstance(data, dict):
+            return {key: self._sanitize_for_postgres(value) for key, value in data.items()}
+        elif isinstance(data, list):
+            return [self._sanitize_for_postgres(item) for item in data]
+        else:
+            return data
+    
     def _save_session_to_db(self, session: FormFillingSession, user_id: str, agent_session_id: str = None):
         """Save a session to Supabase form_states table (PDF bytes saved to Storage)."""
         try:
@@ -202,7 +221,7 @@ class SessionManager:
                     'original'
                 )
             
-            # Prepare form state data
+            # Prepare form state data and sanitize for PostgreSQL
             form_state_data = {
                 "session_id": session.session_id,
                 "user_id": user_id,
@@ -210,7 +229,9 @@ class SessionManager:
                 "pdf_filename": session.pdf_path,
                 "pdf_storage_path": pdf_storage_path,
                 "original_pdf_storage_path": original_pdf_storage_path,
-                "applied_edits": session.applied_edits or {},
+                "applied_edits": self._sanitize_for_postgres(session.applied_edits or {}),
+                "fields": self._sanitize_for_postgres([f.to_dict() for f in session.fields]),
+                "messages": self._sanitize_for_postgres(getattr(session, 'messages', [])),
             }
             
             # Upsert form state record (updates expires_at automatically via trigger)
@@ -1194,6 +1215,15 @@ Start by loading the PDF, then list the fields, fill them according to the instr
         async with ClaudeSDKClient(options=options) as client:
             print(f"[Agent Stream] Connected, sending query...")
             yield {"type": "status", "message": "Agent connected, processing..."}
+            
+            # Track user message for conversation history
+            from datetime import datetime
+            user_message = {
+                "role": "user",
+                "content": instructions,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            session.messages.append(user_message)
 
             await client.query(prompt)
 
@@ -1263,6 +1293,16 @@ Start by loading the PDF, then list the fields, fill them according to the instr
     print(f"  Total input tokens (incl. cache): {total_input_tokens}")
     print(f"  Output tokens: {total_output_tokens}")
 
+    # Track assistant message for conversation history
+    from datetime import datetime
+    assistant_message = {
+        "role": "assistant",
+        "content": result_text if result_text else "Form filled successfully",
+        "timestamp": datetime.utcnow().isoformat(),
+        "status": "complete"
+    }
+    session.messages.append(assistant_message)
+    
     # Save session state to database for persistence across server restarts
     # Use default test user for now (TODO: get from auth)
     save_user_id = "00000000-0000-0000-0000-000000000001"

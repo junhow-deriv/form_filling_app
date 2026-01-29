@@ -1,4 +1,4 @@
-import { AnalyzeResponse, StreamEvent } from '@/types';
+import { AnalyzeResponse, StreamEvent, FormField, ChatMessage } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -165,6 +165,11 @@ export function createPdfUrl(bytes: Uint8Array): string {
 // Session Restoration
 // ============================================================================
 
+export interface ContextFile {
+  filename: string;
+  document_id: string;
+}
+
 export interface SessionInfo {
   session_id: string;
   user_session_id: string;
@@ -172,6 +177,10 @@ export interface SessionInfo {
   has_filled_pdf: boolean;
   has_original_pdf: boolean;
   applied_edits: Record<string, unknown>;
+  fields: FormField[];
+  messages: ChatMessage[];
+  pdf_filename: string | null;
+  context_files: ContextFile[];
 }
 
 export async function getSessionInfo(sessionId: string): Promise<SessionInfo | null> {

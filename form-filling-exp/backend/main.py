@@ -631,6 +631,9 @@ async def fill_pdf_agent_stream(
                 fields = detect_form_fields(pdf_bytes)
                 print(f"[FillAgentStream] Detected {len(fields)} form fields")
                 
+                fields_dict = [f.to_dict() for f in fields]
+                yield f"data: {json.dumps({'type': 'fields_detected', 'fields': fields_dict, 'field_count': len(fields)})}\n\n"
+                
                 # 2. Check if user has any documents (ephemeral or KB)
                 has_documents = await check_user_has_documents(user_id, user_session_id)
                 
@@ -916,7 +919,7 @@ async def get_session_info(session_id: str):
     Get session metadata for restoration after page reload.
     
     Returns session state including agent_session_id, applied_edits,
-    and availability of PDF files.
+    fields, messages, pdf_filename, context_files, and PDF availability.
     """
     # Use default test user for development (TODO: get from auth)
     user_id = "00000000-0000-0000-0000-000000000001"
@@ -925,19 +928,41 @@ async def get_session_info(session_id: str):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    # Get agent_session_id from database
+    # Get full session data from database
     from database.supabase_client import get_client_for_user
     client = get_client_for_user(user_id)
-    result = client.table("form_states").select("agent_session_id").eq("session_id", session_id).eq("user_id", user_id).execute()
-    agent_session_id = result.data[0].get('agent_session_id') if result.data else None
+    
+    result = client.table("form_states")\
+        .select("agent_session_id, pdf_filename, fields, messages")\
+        .eq("session_id", session_id)\
+        .eq("user_id", user_id)\
+        .execute()
+    
+    session_data = result.data[0] if result.data else {}
+    
+    # Query context files from documents table (using session_id)
+    docs_result = client.table("documents")\
+        .select("id, filename")\
+        .eq("session_id", session_id)\
+        .eq("user_id", user_id)\
+        .execute()
+    
+    context_files = [
+        {"document_id": doc["id"], "filename": doc["filename"]}
+        for doc in docs_result.data
+    ] if docs_result.data else []
     
     return {
         "session_id": session.session_id,
         "user_session_id": session.session_id,
-        "agent_session_id": agent_session_id,
+        "agent_session_id": session_data.get('agent_session_id'),
         "has_filled_pdf": session.current_pdf_bytes is not None,
         "has_original_pdf": session.original_pdf_bytes is not None,
         "applied_edits": session.applied_edits or {},
+        "fields": session_data.get('fields', []),
+        "messages": session_data.get('messages', []),
+        "pdf_filename": session_data.get('pdf_filename'),
+        "context_files": context_files,
     }
 
 
