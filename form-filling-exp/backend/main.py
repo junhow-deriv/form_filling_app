@@ -1155,6 +1155,7 @@ if __name__ == "__main__":
     print("\nLegacy Endpoints (deprecated):")
     print("  POST /fill               - Fill (single-shot LLM mode)")
     print("  POST /fill-preview       - Preview single-shot mode")
+    print("  POST /detect-fields      - Detect form fields in a PDF")
     print("\nOther:")
     print("  GET  /docs               - API documentation (Swagger UI)")
     print("\nWeb UI: http://localhost:8000")
