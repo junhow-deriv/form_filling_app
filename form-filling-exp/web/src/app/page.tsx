@@ -5,7 +5,6 @@ import { ChatMessage, FormField, PdfDisplayMode, StreamEvent, AgentLogEntry } fr
 import { analyzePdf, streamAgentFill, hexToBytes, streamParseFiles, getSessionInfo, getSessionPdf, getSessionOriginalPdf } from '@/lib/api';
 import { ContextFile, ParseProgress } from '@/components/ContextFilesUpload';
 import {
-  createSession,
   createMessage,
   getSessionIdFromUrl,
   setSessionIdInUrl,

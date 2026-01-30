@@ -1,21 +1,4 @@
-import { Session, ChatMessage } from '@/types';
-
-// Generate a random session ID
-export function generateSessionId(): string {
-  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-}
-
-// Create a new session
-export function createSession(): Session {
-  return {
-    id: generateSessionId(),
-    originalPdf: null,
-    filledPdfBytes: null,
-    fields: [],
-    messages: [],
-    isProcessing: false,
-  };
-}
+import { ChatMessage } from '@/types';
 
 // Create a new chat message
 export function createMessage(
