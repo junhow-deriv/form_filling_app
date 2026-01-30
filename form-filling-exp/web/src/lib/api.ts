@@ -23,9 +23,10 @@ export async function validateAnthropicApiKey(apiKey: string): Promise<{ valid: 
   return response.json();
 }
 
-export async function analyzePdf(file: File): Promise<AnalyzeResponse> {
+export async function* analyzePdf(file: File, sessionId: string): AsyncGenerator<StreamEvent> {
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('session_id', sessionId);
 
   const response = await fetch(`${API_BASE}/analyze`, {
     method: 'POST',
@@ -37,7 +38,37 @@ export async function analyzePdf(file: File): Promise<AnalyzeResponse> {
     throw new Error(error.detail || 'Failed to analyze PDF');
   }
 
-  return response.json();
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('No response body');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const jsonStr = line.slice(6).trim();
+        if (jsonStr) {
+          try {
+            const event: StreamEvent = JSON.parse(jsonStr);
+            yield event;
+          } catch {
+            console.error('Failed to parse SSE:', jsonStr);
+          }
+        }
+      }
+    }
+  }
 }
 
 export interface StreamAgentFillOptions {
@@ -234,7 +265,7 @@ export interface ParsedContextFile {
 }
 
 export interface ParseFilesProgress {
-  type: 'start' | 'progress' | 'complete' | 'error' | 'init';
+  type: 'start' | 'progress' | 'complete' | 'error' | 'init' | 'system_message';
   total?: number;
   current?: number;
   filename?: string;
@@ -252,6 +283,9 @@ export interface ParseFilesProgress {
   error_count?: number;
   count?: number;
   storage_type?: string;
+  content?: string;
+  role?: 'system' | 'user' | 'assistant';
+  timestamp?: string;
 }
 
 export async function* streamParseFiles(

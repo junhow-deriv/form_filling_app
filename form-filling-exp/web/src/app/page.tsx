@@ -50,7 +50,7 @@ export default function Home() {
       // Use existing session ID from URL for both frontend and backend
       // This is the unified session ID that maps to form_states.session_id
       setSessionId(urlSessionId);
-      setUserSessionId(urlSessionId); // ✅ Unified ID
+      setUserSessionId(urlSessionId);
       
       // Fetch session data from backend
       getSessionInfo(urlSessionId).then(async (sessionData) => {
@@ -61,7 +61,17 @@ export default function Home() {
           setAgentSessionId(sessionData.agent_session_id);
           setAppliedEdits(sessionData.applied_edits);
           setFields(sessionData.fields || []);
-          setMessages(sessionData.messages || []);
+
+          const transformedMessages = (sessionData.messages || []).map(msg => ({
+            ...msg,
+            id: msg.id || generateId(),
+            timestamp: typeof msg.timestamp === 'string' ? new Date(msg.timestamp) : msg.timestamp,
+            status: msg.status as ChatMessage['status'] | undefined,
+            toolCalls: msg.toolCalls || [],
+            agentLog: msg.agentLog || [],
+          }));
+          setMessages(transformedMessages);
+          
           setContextFiles(sessionData.context_files || []);
           
           if (sessionData.has_filled_pdf) {
@@ -116,6 +126,11 @@ export default function Home() {
     }
   }, []);
 
+  const handleNewForm = useCallback(() => {
+    const newSessionId = generateId();
+    window.location.href = `/?session=${newSessionId}`;
+  }, []);
+
   // Handle file selection and analysis
   const handleFileSelect = useCallback(async (selectedFile: File | null) => {
     if (!selectedFile) {
@@ -142,21 +157,27 @@ export default function Home() {
     setIsAnalyzing(true);
 
     try {
-      const result = await analyzePdf(selectedFile);
-      setFields(result.fields);
-
-      // Add system message about detected fields
-      if (result.field_count > 0) {
-        setMessages((prev) => [
-          ...prev,
-          createMessage('system', `Detected ${result.field_count} fillable fields in the PDF`),
-        ]);
-      } else {
-        setMessages((prev) => [
-          ...prev,
-          createMessage('system', 'No fillable form fields detected. Make sure this is a PDF with AcroForm fields.'),
-        ]);
+      for await (const event of analyzePdf(selectedFile, sessionId)) {
+        if (event.type === 'fields_detected' && event.fields) {
+          setFields(event.fields);
+        }
+        
+        if (event.type === 'system_message' && event.content) {
+          setMessages((prev) => [
+            ...prev,
+            createMessage('system', event.content || ''),
+          ]);
+        }
+        
+        if (event.type === 'error' && event.error) {
+          setMessages((prev) => [
+            ...prev,
+            createMessage('system', `Error: ${event.error}`),
+          ]);
+        }
       }
+      
+      setUserSessionId(sessionId);
     } catch (error) {
       console.error('Analysis error:', error);
       setMessages((prev) => [
@@ -166,7 +187,7 @@ export default function Home() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, []);
+  }, [sessionId]);
 
   // Handle parsing context files
   const handleParseFiles = useCallback(
@@ -194,6 +215,13 @@ export default function Home() {
               status: event.status,
               error: event.error,
             });
+          }
+
+          if (event.type === 'system_message' && event.content) {
+            setMessages((prev) => [
+              ...prev,
+              createMessage('system', event.content || ''),
+            ]);
           }
 
           if (event.type === 'error' && event.error) {
@@ -317,11 +345,16 @@ export default function Home() {
             if (event.session_id) {
               newAgentSessionId = event.session_id;
             }
-            const totalEdits = newAppliedEdits ? Object.keys(newAppliedEdits).length : appliedCount;
-            if (isContinuation) {
-              finalContent = `Updated ${appliedCount} fields. Total: ${totalEdits} fields filled.`;
+            // Use final_message from backend if available, otherwise construct fallback
+            if (event.final_message) {
+              finalContent = event.final_message;
             } else {
-              finalContent = `Successfully filled ${appliedCount} form fields.`;
+              const totalEdits = newAppliedEdits ? Object.keys(newAppliedEdits).length : appliedCount;
+              if (isContinuation) {
+                finalContent = `Updated ${appliedCount} fields. Total: ${totalEdits} fields filled.`;
+              } else {
+                finalContent = `Successfully filled ${appliedCount} form fields.`;
+              }
             }
           }
 
@@ -424,6 +457,7 @@ export default function Home() {
           <LeftPanel
             file={file}
             onFileSelect={handleFileSelect}
+            onNewForm={handleNewForm}
             fields={fields}
             originalPdfBytes={originalPdfBytes}
             filledPdfBytes={filledPdfBytes}

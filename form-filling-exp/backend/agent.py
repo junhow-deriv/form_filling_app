@@ -420,7 +420,8 @@ if AGENT_SDK_AVAILABLE:
 
             with open(pdf_path, 'rb') as f:
                 pdf_bytes = f.read()
-            session.fields = detect_form_fields(pdf_bytes)
+            if not session.fields:
+                session.fields = detect_form_fields(pdf_bytes)
             session.pending_edits = {}
             # Don't clear applied_edits if this is a continuation
             if not session.is_continuation:
@@ -1130,7 +1131,6 @@ async def run_agent_stream(
         if previous_edits:
             session.applied_edits = dict(previous_edits)
     else:
-        session.reset()
         # Store the original PDF bytes for new sessions
         if original_pdf_bytes:
             session.original_pdf_bytes = original_pdf_bytes
@@ -1295,9 +1295,10 @@ Start by loading the PDF, then list the fields, fill them according to the instr
 
     # Track assistant message for conversation history
     from datetime import datetime
+    final_assistant_content = result_text if result_text else "Form filled successfully"
     assistant_message = {
         "role": "assistant",
-        "content": result_text if result_text else "Form filled successfully",
+        "content": final_assistant_content,
         "timestamp": datetime.utcnow().isoformat(),
         "status": "complete"
     }
@@ -1313,11 +1314,12 @@ Start by loading the PDF, then list the fields, fill them according to the instr
         "type": "complete",
         "success": True,
         "result": result_text,
+        "final_message": final_assistant_content,
         "message_count": message_count,
         "applied_count": len(session.applied_edits),
         "applied_edits": dict(session.applied_edits),
-        "session_id": agent_session_id,  # Return session_id for frontend to use in next turn
-        "user_session_id": session.session_id,  # Return the user session ID for concurrent user tracking
+        "session_id": agent_session_id,
+        "user_session_id": session.session_id,
         "token_usage": {
             "turn_input_tokens": turn_input_tokens,
             "turn_output_tokens": turn_output_tokens,

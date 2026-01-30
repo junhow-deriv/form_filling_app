@@ -178,54 +178,102 @@ class FillRequest(BaseModel):
 # API Endpoints
 # ============================================================================
 
-@app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze_pdf(file: UploadFile = File(...)):
+@app.post("/analyze")
+async def analyze_pdf(
+    file: UploadFile = File(...),
+    session_id: str = Form(...)
+):
     """
-    Analyze a PDF to detect fillable form fields.
+    Analyze a PDF to detect fillable form fields (streaming version).
     
-    Returns information about each detected field including:
-    - field_id: Unique identifier for the field
-    - field_type: text, checkbox, dropdown, or radio
-    - label_context: Nearby text that describes the field
-    - current_value: Any existing value in the field
-    - options: Available options for dropdown/radio fields
+    Returns SSE stream with analysis progress and results.
+    Creates or retrieves a session and saves system messages for persistence.
+    
+    Args:
+        file: The PDF file to analyze
+        session_id: Session ID for message persistence (required)
     """
     if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(400, "File must be a PDF")
+        async def error_stream():
+            yield f"data: {json.dumps({'type': 'error', 'error': 'File must be a PDF'})}\n\n"
+        return StreamingResponse(
+            error_stream(),
+            media_type="text/event-stream"
+        )
     
     pdf_bytes = await file.read()
     
-    try:
-        fields = detect_form_fields(pdf_bytes)
-    except Exception as e:
-        raise HTTPException(500, f"Failed to analyze PDF: {str(e)}")
+    async def event_stream():
+        from datetime import datetime
+        
+        user_id = "00000000-0000-0000-0000-000000000001"
+        session = _session_manager.get_or_create_session(session_id, user_id)
+        
+        yield f"data: {json.dumps({'type': 'init', 'message': 'Analyzing PDF...'})}\n\n"
+        
+        try:
+            fields = detect_form_fields(pdf_bytes)
+            session.fields = fields
+            
+            field_infos = [
+                {
+                    'field_id': f.field_id,
+                    'field_type': f.field_type.value,
+                    'page': f.page,
+                    'label_context': f.label_context,
+                    'friendly_label': f.friendly_label,
+                    'current_value': f.current_value,
+                    'options': f.options
+                }
+                for f in fields
+            ]
+            
+            yield f"data: {json.dumps({'type': 'fields_detected', 'fields': field_infos, 'field_count': len(fields)})}\n\n"
+            
+            if len(fields) > 0:
+                system_message_content = f"Detected {len(fields)} fillable fields in the PDF"
+            else:
+                system_message_content = "No fillable form fields detected. Make sure this is a PDF with AcroForm fields."
+            
+            system_message = {
+                'type': 'system_message',
+                'role': 'system',
+                'content': system_message_content,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            yield f"data: {json.dumps(system_message)}\n\n"
+            
+            session.messages = []
+            session.messages.append({
+                'role': 'system',
+                'content': system_message_content,
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            _session_manager.save_session(session, user_id)
+            print(f"[Analyze] Saved system message to session {session_id}")
+            
+            yield f"data: {json.dumps({'type': 'complete', 'success': True, 'field_count': len(fields)})}\n\n"
+            
+        except Exception as e:
+            error_msg = f"Failed to analyze PDF: {str(e)}"
+            yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+            
+            if not hasattr(session, 'messages') or session.messages is None:
+                session.messages = []
+            session.messages.append({
+                'role': 'system',
+                'content': f"Error analyzing PDF: {str(e)}",
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            _session_manager.save_session(session, user_id)
     
-    if not fields:
-        return AnalyzeResponse(
-            success=True,
-            message="No fillable form fields found in this PDF. This endpoint only works with PDFs that have native AcroForm fields.",
-            fields=[],
-            field_count=0
-        )
-    
-    field_infos = [
-        FieldInfo(
-            field_id=f.field_id,
-            field_type=f.field_type.value,
-            page=f.page,
-            label_context=f.label_context,
-            friendly_label=f.friendly_label,
-            current_value=f.current_value,
-            options=f.options
-        )
-        for f in fields
-    ]
-    
-    return AnalyzeResponse(
-        success=True,
-        message=f"Found {len(fields)} fillable form fields",
-        fields=field_infos,
-        field_count=len(fields)
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
     )
 
 
@@ -602,12 +650,13 @@ async def fill_pdf_agent_stream(
 
         try:
             pdf_to_use = pdf_bytes
+
+            session = _session_manager.get_session(user_session_id, user_id)
             
             if is_continuation and user_session_id:
                 # For continuations, load the previously filled PDF from session storage
-                session_check = _session_manager.get_session(user_session_id, user_id)
-                if session_check and session_check.current_pdf_bytes:
-                    pdf_to_use = session_check.current_pdf_bytes
+                if session and session.current_pdf_bytes:
+                    pdf_to_use = session.current_pdf_bytes
                     print(f"[FillAgentStream] ✅ Using stored filled PDF from session ({len(pdf_to_use)} bytes)")
                     yield f"data: {json.dumps({'type': 'status', 'message': 'Loaded previously filled PDF from session...'})}\n\n"
                 else:
@@ -627,9 +676,12 @@ async def fill_pdf_agent_stream(
             
             if not is_continuation:
                 # 1. Detect form fields BEFORE starting agent
-                yield f"data: {json.dumps({'type': 'status', 'message': 'Detecting form fields...'})}\n\n"
-                fields = detect_form_fields(pdf_bytes)
-                print(f"[FillAgentStream] Detected {len(fields)} form fields")
+                if session and session.fields:
+                    fields = session.fields
+                else:
+                    yield f"data: {json.dumps({'type': 'status', 'message': 'Detecting form fields...'})}\n\n"
+                    fields = detect_form_fields(pdf_bytes)
+                    print(f"[FillAgentStream] Detected {len(fields)} form fields")
                 
                 fields_dict = [f.to_dict() for f in fields]
                 yield f"data: {json.dumps({'type': 'fields_detected', 'fields': fields_dict, 'field_count': len(fields)})}\n\n"
@@ -852,11 +904,12 @@ async def parse_context_files(
     print(f"[Parse] Pre-validation passed: ~{estimated_tokens:,} estimated tokens for {len(file_data)} files")
 
     async def event_stream():
+        from datetime import datetime
+        
         yield f"data: {json.dumps({'type': 'init', 'message': f'Processing {len(file_data)} file(s)...'})}\n\n"
 
         try:
             results = []
-            # Use default test user (TODO: get from auth)
             test_user_id = "00000000-0000-0000-0000-000000000001"
             session_id_to_use = user_session_id if is_ephemeral else None
 
@@ -864,7 +917,6 @@ async def parse_context_files(
                 yield f"data: {json.dumps({'type': 'progress', 'current': idx + 1, 'total': len(file_data), 'filename': filename, 'status': 'processing'})}\n\n"
                 
                 try:
-                    # Use the new extraction/chunking/embedding flow
                     doc_id = await store_document(
                         user_id=test_user_id,
                         filename=filename,
@@ -887,17 +939,82 @@ async def parse_context_files(
                         "success": False,
                         "error": str(e)
                     })
+                    
+                    error_message = f"Error parsing {filename}: {str(e)}"
                     yield f"data: {json.dumps({'type': 'error', 'filename': filename, 'error': str(e)})}\n\n"
+                    
+                    if user_session_id:
+                        try:
+                            session = _session_manager.get_session(user_session_id, test_user_id)
+                            if session:
+                                if not hasattr(session, 'messages') or session.messages is None:
+                                    session.messages = []
+                                session.messages.append({
+                                    'role': 'system',
+                                    'content': error_message,
+                                    'timestamp': datetime.utcnow().isoformat()
+                                })
+                                _session_manager.save_session(session, test_user_id)
+                        except Exception as save_error:
+                            print(f"[ParseFiles] Error saving error message: {save_error}")
 
-            # Final event
             storage_type = "ephemeral (auto-cleanup: 24h)" if is_ephemeral else "global knowledge base"
             success_count = sum(1 for r in results if r.get("success"))
+            error_count = len(results) - success_count
+            
+            if success_count > 0 and error_count == 0:
+                system_message_content = f"Successfully parsed {success_count} context file{'s' if success_count > 1 else ''}"
+            elif success_count > 0 and error_count > 0:
+                system_message_content = f"Parsed {success_count} of {len(results)} files ({error_count} failed)"
+            else:
+                system_message_content = f"Failed to parse all {len(results)} files"
+            
+            system_message = {
+                'type': 'system_message',
+                'role': 'system',
+                'content': system_message_content,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            yield f"data: {json.dumps(system_message)}\n\n"
+            
+            if user_session_id:
+                try:
+                    session = _session_manager.get_session(user_session_id, test_user_id)
+                    if session:
+                        if not hasattr(session, 'messages') or session.messages is None:
+                            session.messages = []
+                        session.messages.append({
+                            'role': 'system',
+                            'content': system_message_content,
+                            'timestamp': datetime.utcnow().isoformat()
+                        })
+                        _session_manager.save_session(session, test_user_id)
+                        print(f"[ParseFiles] Saved system message to session {user_session_id}")
+                except Exception as save_error:
+                    print(f"[ParseFiles] Error saving system message: {save_error}")
+            
             yield f"data: {json.dumps({'type': 'complete', 'results': results, 'count': len(results), 'success_count': success_count, 'storage_type': storage_type})}\n\n"
             
             print(f"[ParseFiles] Stored {success_count}/{len(results)} documents in {storage_type}")
 
         except Exception as e:
+            error_msg = f"Error: {str(e)}"
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            
+            if user_session_id:
+                try:
+                    session = _session_manager.get_session(user_session_id, test_user_id)
+                    if session:
+                        if not hasattr(session, 'messages') or session.messages is None:
+                            session.messages = []
+                        session.messages.append({
+                            'role': 'system',
+                            'content': error_msg,
+                            'timestamp': datetime.utcnow().isoformat()
+                        })
+                        _session_manager.save_session(session, test_user_id)
+                except Exception as save_error:
+                    print(f"[ParseFiles] Error saving error message: {save_error}")
 
     return StreamingResponse(
         event_stream(),
