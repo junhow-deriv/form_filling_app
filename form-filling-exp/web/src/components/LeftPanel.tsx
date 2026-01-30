@@ -8,6 +8,7 @@ import PdfViewer from './PdfViewer';
 interface LeftPanelProps {
   file: File | null;
   onFileSelect: (file: File | null) => void;
+  onNewForm: () => void;
   fields: FormField[];
   originalPdfBytes: Uint8Array | null;  // For restored sessions
   filledPdfBytes: Uint8Array | null;
@@ -20,6 +21,7 @@ interface LeftPanelProps {
 export default function LeftPanel({
   file,
   onFileSelect,
+  onNewForm,
   fields,
   originalPdfBytes,
   filledPdfBytes,
@@ -28,11 +30,6 @@ export default function LeftPanel({
   isAnalyzing,
   isProcessing,
 }: LeftPanelProps) {
-  const handleReset = () => {
-    if (!isProcessing) {
-      onFileSelect(null);
-    }
-  };
 
   return (
     <div className="flex flex-col h-full">
@@ -46,7 +43,7 @@ export default function LeftPanel({
         </div>
         {file && (
           <button
-            onClick={handleReset}
+            onClick={onNewForm}
             disabled={isProcessing}
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md bg-background-tertiary text-foreground-muted hover:text-foreground-secondary hover:bg-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >

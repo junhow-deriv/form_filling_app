@@ -1000,8 +1000,11 @@
             formData.append('file', currentFile);
             formData.append('instructions', instructions.value);
             
-            // Append context files if any
+            // Generate session_id and append context files if any
             if (contextFiles.length > 0) {
+                const sessionId = crypto.randomUUID();
+                formData.append('user_session_id', sessionId);
+                
                 for (const cf of contextFiles) {
                     formData.append('context_files', cf);
                 }

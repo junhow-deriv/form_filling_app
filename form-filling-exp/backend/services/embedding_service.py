@@ -225,7 +225,12 @@ async def store_document(
     file_hash = calculate_file_hash(file_bytes)
     
     # Check if document already exists
-    existing = client.table("documents").select("id").eq("file_hash", file_hash).eq("user_id", user_id).execute()
+    existing = client.table("documents").select("id").eq("file_hash", file_hash).eq("user_id", user_id)
+    if not session_id:
+        existing = existing.is_("session_id", None)
+    else:
+        existing = existing.eq("session_id", session_id)
+    existing = existing.execute()
     if existing.data:
         doc_id = existing.data[0]["id"]
         print(f"[Store] Document already exists: {doc_id}")

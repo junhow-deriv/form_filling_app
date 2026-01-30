@@ -78,6 +78,7 @@ class FormFillingSession:
     def __init__(self, session_id: str | None = None):
         self.session_id = session_id or str(uuid.uuid4())
         self.doc = None
+        self.file_name: str | None = None
         self.pdf_path: str | None = None
         self.output_path: str | None = None
         self.fields: list[DetectedField] = []
@@ -89,10 +90,10 @@ class FormFillingSession:
         self.original_pdf_bytes: bytes | None = None
         # Track if this is a continuation
         self.is_continuation: bool = False
-        # Context files parsed with LlamaParse (list of ParsedFile-like dicts)
-        self.context_files: list = []
         # Anthropic API key for this session (user-provided)
         self.anthropic_api_key: str | None = None
+        # Track conversation history for persistence
+        self.messages: list[dict] = []
 
     def reset(self):
         """Reset session state for a new form filling operation."""
@@ -107,13 +108,14 @@ class FormFillingSession:
         self.current_pdf_bytes = None
         self.original_pdf_bytes = None
         self.is_continuation = False
-        # Don't clear context_files on reset - they persist across form operations
+        self.messages = []
 
     def soft_reset(self):
         """Reset for a new turn but preserve the filled PDF state."""
-        # Keep doc, fields, and current_pdf_bytes
+        # Keep doc, fields, current_pdf_bytes, and messages
         self.pending_edits = {}
         # Don't clear applied_edits - we want to track cumulative changes
+        # Don't clear messages - we want to track conversation history
 
 
 from database.supabase_client import get_client_for_user, get_supabase_client
@@ -152,8 +154,7 @@ class SessionManager:
             
             row = result.data[0]
             session = FormFillingSession(row['session_id'])
-            session.pdf_path = row.get('pdf_filename')
-            session.output_path = row.get('pdf_filename')  # Temp path, not really used with storage
+            session.file_name = row.get('pdf_filename')
             
             # Store agent_session_id for multi-turn conversations
             if row.get('agent_session_id'):
@@ -180,7 +181,22 @@ class SessionManager:
             print(f"[SessionManager] Error loading form state {session_id}: {e}")
             return None
 
-    def _save_session_to_db(self, session: FormFillingSession, user_id: str):
+    def _sanitize_for_postgres(self, data):
+        """
+        Recursively sanitize data to remove null bytes and problematic Unicode characters
+        that PostgreSQL cannot handle in TEXT/JSONB fields.
+        """
+        if isinstance(data, str):
+            # Remove null bytes and other problematic characters
+            return data.replace('\x00', '').replace('\u0000', '')
+        elif isinstance(data, dict):
+            return {key: self._sanitize_for_postgres(value) for key, value in data.items()}
+        elif isinstance(data, list):
+            return [self._sanitize_for_postgres(item) for item in data]
+        else:
+            return data
+    
+    def _save_session_to_db(self, session: FormFillingSession, user_id: str, agent_session_id: str = None):
         """Save a session to Supabase form_states table (PDF bytes saved to Storage)."""
         try:
             client = get_client_for_user(user_id)
@@ -205,15 +221,17 @@ class SessionManager:
                     'original'
                 )
             
-            # Prepare form state data
+            # Prepare form state data and sanitize for PostgreSQL
             form_state_data = {
                 "session_id": session.session_id,
                 "user_id": user_id,
-                "agent_session_id": getattr(session, 'agent_session_id', None),
-                "pdf_filename": session.pdf_path,
+                "agent_session_id": agent_session_id,
+                "pdf_filename": session.file_name,
                 "pdf_storage_path": pdf_storage_path,
                 "original_pdf_storage_path": original_pdf_storage_path,
-                "applied_edits": session.applied_edits or {},
+                "applied_edits": self._sanitize_for_postgres(session.applied_edits or {}),
+                "fields": self._sanitize_for_postgres([f.to_dict() for f in session.fields]),
+                "messages": self._sanitize_for_postgres(getattr(session, 'messages', [])),
             }
             
             # Upsert form state record (updates expires_at automatically via trigger)
@@ -279,11 +297,11 @@ class SessionManager:
                 return session
         return self.create_session(session_id, user_id)
 
-    def save_session(self, session: FormFillingSession, user_id: str = None):
+    def save_session(self, session: FormFillingSession, user_id: str = None, agent_session_id: str = None):
         """Explicitly save session state to database."""
         if not user_id:
             user_id = "00000000-0000-0000-0000-000000000001"
-        self._save_session_to_db(session, user_id)
+        self._save_session_to_db(session, user_id, agent_session_id)
 
     def delete_session(self, session_id: str, user_id: str = None) -> bool:
         """Delete a session and clean up resources."""
@@ -360,16 +378,6 @@ class SessionManager:
         # Try to load from storage directly
         return download_session_pdf(user_id, session_id, 'original')
 
-    def get_session_context_files(self, session_id: str, user_id: str = None) -> list | None:
-        """Get the context files for a session (for API retrieval)."""
-        if not user_id:
-            user_id = "00000000-0000-0000-0000-000000000001"
-        
-        session = self.get_session(session_id, user_id)
-        if session and session.context_files:
-            return session.context_files
-        return None
-
 
 # Global session manager (replaces the singleton _session)
 _session_manager = SessionManager()
@@ -412,7 +420,8 @@ if AGENT_SDK_AVAILABLE:
 
             with open(pdf_path, 'rb') as f:
                 pdf_bytes = f.read()
-            session.fields = detect_form_fields(pdf_bytes)
+            if not session.fields:
+                session.fields = detect_form_fields(pdf_bytes)
             session.pending_edits = {}
             # Don't clear applied_edits if this is a continuation
             if not session.is_continuation:
@@ -1122,7 +1131,6 @@ async def run_agent_stream(
         if previous_edits:
             session.applied_edits = dict(previous_edits)
     else:
-        session.reset()
         # Store the original PDF bytes for new sessions
         if original_pdf_bytes:
             session.original_pdf_bytes = original_pdf_bytes
@@ -1207,6 +1215,15 @@ Start by loading the PDF, then list the fields, fill them according to the instr
         async with ClaudeSDKClient(options=options) as client:
             print(f"[Agent Stream] Connected, sending query...")
             yield {"type": "status", "message": "Agent connected, processing..."}
+            
+            # Track user message for conversation history
+            from datetime import datetime
+            user_message = {
+                "role": "user",
+                "content": instructions,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            session.messages.append(user_message)
 
             await client.query(prompt)
 
@@ -1276,21 +1293,33 @@ Start by loading the PDF, then list the fields, fill them according to the instr
     print(f"  Total input tokens (incl. cache): {total_input_tokens}")
     print(f"  Output tokens: {total_output_tokens}")
 
+    # Track assistant message for conversation history
+    from datetime import datetime
+    final_assistant_content = result_text if result_text else "Form filled successfully"
+    assistant_message = {
+        "role": "assistant",
+        "content": final_assistant_content,
+        "timestamp": datetime.utcnow().isoformat(),
+        "status": "complete"
+    }
+    session.messages.append(assistant_message)
+    
     # Save session state to database for persistence across server restarts
     # Use default test user for now (TODO: get from auth)
-    save_user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
-    _session_manager.save_session(session, save_user_id)
+    save_user_id = "00000000-0000-0000-0000-000000000001"
+    _session_manager.save_session(session, save_user_id, agent_session_id=agent_session_id)
 
     # Yield final summary with applied edits and session_id for multi-turn tracking
     yield {
         "type": "complete",
         "success": True,
         "result": result_text,
+        "final_message": final_assistant_content,
         "message_count": message_count,
         "applied_count": len(session.applied_edits),
         "applied_edits": dict(session.applied_edits),
-        "session_id": agent_session_id,  # Return session_id for frontend to use in next turn
-        "user_session_id": session.session_id,  # Return the user session ID for concurrent user tracking
+        "session_id": agent_session_id,
+        "user_session_id": session.session_id,
         "token_usage": {
             "turn_input_tokens": turn_input_tokens,
             "turn_output_tokens": turn_output_tokens,
@@ -1395,7 +1424,7 @@ Start by loading the PDF, then list the fields, fill them according to the instr
                 del os_module.environ["ANTHROPIC_API_KEY"]
 
     # Save session state to database for persistence across server restarts
-    save_user_id = user_session_id if user_session_id else "00000000-0000-0000-0000-000000000001"
+    save_user_id = "00000000-0000-0000-0000-000000000001"
     _session_manager.save_session(session, save_user_id)
 
     return {
