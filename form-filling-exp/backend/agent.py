@@ -78,6 +78,7 @@ class FormFillingSession:
     def __init__(self, session_id: str | None = None):
         self.session_id = session_id or str(uuid.uuid4())
         self.doc = None
+        self.file_name: str | None = None
         self.pdf_path: str | None = None
         self.output_path: str | None = None
         self.fields: list[DetectedField] = []
@@ -153,8 +154,7 @@ class SessionManager:
             
             row = result.data[0]
             session = FormFillingSession(row['session_id'])
-            session.pdf_path = row.get('pdf_filename')
-            session.output_path = row.get('pdf_filename')  # Temp path, not really used with storage
+            session.file_name = row.get('pdf_filename')
             
             # Store agent_session_id for multi-turn conversations
             if row.get('agent_session_id'):
@@ -226,7 +226,7 @@ class SessionManager:
                 "session_id": session.session_id,
                 "user_id": user_id,
                 "agent_session_id": agent_session_id,
-                "pdf_filename": session.pdf_path,
+                "pdf_filename": session.file_name,
                 "pdf_storage_path": pdf_storage_path,
                 "original_pdf_storage_path": original_pdf_storage_path,
                 "applied_edits": self._sanitize_for_postgres(session.applied_edits or {}),

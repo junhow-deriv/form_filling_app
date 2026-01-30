@@ -208,6 +208,7 @@ async def analyze_pdf(
         
         user_id = "00000000-0000-0000-0000-000000000001"
         session = _session_manager.get_or_create_session(session_id, user_id)
+        session.file_name = file.filename
         
         yield f"data: {json.dumps({'type': 'init', 'message': 'Analyzing PDF...'})}\n\n"
         
