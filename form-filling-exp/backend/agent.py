@@ -1139,6 +1139,7 @@ async def run_agent_stream(
     # For continuations, context is already in conversation history via session resumption
     context_section = ""
     if not is_continuation and intelligent_context:
+        print(f'This is the given context {intelligent_context}')
         context_section = f"""
 ## Retrieved Context
 The following information was retrieved from your documents based on the form fields and instructions:
