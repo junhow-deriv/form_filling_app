@@ -2,11 +2,12 @@
 
 import { ChatMessage as ChatMessageType } from '@/types';
 import AgentActivityLog from './AgentActivityLog';
+import MarkdownRenderer from './MarkdownRenderer';
 
 interface ChatMessageProps {
   message: ChatMessageType;
 }
-
+  
 export default function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
@@ -39,7 +40,7 @@ export default function ChatMessage({ message }: ChatMessageProps) {
         {/* User message bubble */}
         {isUser && (
           <div className="px-4 py-3 rounded-2xl bg-accent text-white rounded-br-md">
-            <div className="text-sm whitespace-pre-wrap">{message.content}</div>
+            <MarkdownRenderer content={message.content} />
           </div>
         )}
 
@@ -58,7 +59,7 @@ export default function ChatMessage({ message }: ChatMessageProps) {
             {/* Final response content */}
             {message.content && message.status !== 'streaming' && (
               <div className="px-4 py-3 rounded-2xl bg-background-tertiary text-foreground rounded-bl-md">
-                <div className="text-sm whitespace-pre-wrap">{message.content}</div>
+                <MarkdownRenderer content={message.content} />
               </div>
             )}
 
