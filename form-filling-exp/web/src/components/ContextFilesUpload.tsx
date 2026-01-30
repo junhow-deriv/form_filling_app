@@ -4,8 +4,7 @@ import { useCallback, useState } from 'react';
 
 export interface ContextFile {
   filename: string;
-  content: string;
-  was_parsed: boolean;
+  document_id: string;
 }
 
 export interface ParseProgress {
@@ -230,9 +229,6 @@ export default function ContextFilesUpload({
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
                 <span className="text-xs text-foreground-secondary truncate">{file.filename}</span>
-                {file.was_parsed && (
-                  <span className="text-xs text-foreground-muted">(parsed)</span>
-                )}
               </div>
               <button
                 onClick={() => handleRemoveUploaded(index)}

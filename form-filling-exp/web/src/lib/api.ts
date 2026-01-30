@@ -1,4 +1,4 @@
-import { AnalyzeResponse, StreamEvent } from '@/types';
+import { AnalyzeResponse, StreamEvent, FormField, ChatMessage } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -23,9 +23,10 @@ export async function validateAnthropicApiKey(apiKey: string): Promise<{ valid: 
   return response.json();
 }
 
-export async function analyzePdf(file: File): Promise<AnalyzeResponse> {
+export async function* analyzePdf(file: File, sessionId: string): AsyncGenerator<StreamEvent> {
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('session_id', sessionId);
 
   const response = await fetch(`${API_BASE}/analyze`, {
     method: 'POST',
@@ -37,7 +38,37 @@ export async function analyzePdf(file: File): Promise<AnalyzeResponse> {
     throw new Error(error.detail || 'Failed to analyze PDF');
   }
 
-  return response.json();
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('No response body');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const jsonStr = line.slice(6).trim();
+        if (jsonStr) {
+          try {
+            const event: StreamEvent = JSON.parse(jsonStr);
+            yield event;
+          } catch {
+            console.error('Failed to parse SSE:', jsonStr);
+          }
+        }
+      }
+    }
+  }
 }
 
 export interface StreamAgentFillOptions {
@@ -49,12 +80,13 @@ export interface StreamAgentFillOptions {
   resumeSessionId?: string | null;  // Agent session ID to resume conversation context
   userSessionId?: string | null;  // User's form-filling session ID (for concurrent user support)
   anthropicApiKey?: string | null;  // User's Anthropic API key for Claude calls
+  contextFileIds?: Array<{ filename: string; document_id: string }>;  // Context file document IDs from /parse-files
 }
 
 export async function* streamAgentFill(
   options: StreamAgentFillOptions
 ): AsyncGenerator<StreamEvent> {
-  const { file, instructions, filledPdfBytes, isContinuation, previousEdits, resumeSessionId, userSessionId, anthropicApiKey } = options;
+  const { file, instructions, filledPdfBytes, isContinuation, previousEdits, resumeSessionId, userSessionId, anthropicApiKey, contextFileIds } = options;
 
   const formData = new FormData();
 
@@ -83,6 +115,11 @@ export async function* streamAgentFill(
 
   if (anthropicApiKey) {
     formData.append('anthropic_api_key', anthropicApiKey);
+  }
+
+  if (contextFileIds && contextFileIds.length > 0) {
+    const docIds = contextFileIds.map(f => f.document_id);
+    formData.append('context_file_ids', JSON.stringify(docIds));
   }
 
   const response = await fetch(`${API_BASE}/fill-agent-stream`, {
@@ -155,12 +192,26 @@ export function createPdfUrl(bytes: Uint8Array): string {
   return URL.createObjectURL(blob);
 }
 
+// ============================================================================
+// Session Restoration
+// ============================================================================
+
+export interface ContextFile {
+  filename: string;
+  document_id: string;
+}
+
 export interface SessionInfo {
   session_id: string;
-  has_pdf: boolean;
+  user_session_id: string;
+  agent_session_id: string | null;
+  has_filled_pdf: boolean;
   has_original_pdf: boolean;
   applied_edits: Record<string, unknown>;
-  field_count: number;
+  fields: FormField[];
+  messages: ChatMessage[];
+  pdf_filename: string | null;
+  context_files: ContextFile[];
 }
 
 export async function getSessionInfo(sessionId: string): Promise<SessionInfo | null> {
@@ -170,41 +221,36 @@ export async function getSessionInfo(sessionId: string): Promise<SessionInfo | n
       return null;
     }
     return response.json();
-  } catch {
+  } catch (error) {
+    console.error('Failed to get session info:', error);
     return null;
   }
 }
 
 export async function getSessionPdf(sessionId: string): Promise<Uint8Array | null> {
-  console.log('[DEBUG api.ts] getSessionPdf called for:', sessionId);
   try {
     const response = await fetch(`${API_BASE}/session/${sessionId}/pdf`);
-    console.log('[DEBUG api.ts] getSessionPdf response:', { ok: response.ok, status: response.status });
     if (!response.ok) {
       return null;
     }
     const arrayBuffer = await response.arrayBuffer();
-    console.log('[DEBUG api.ts] getSessionPdf got bytes:', arrayBuffer.byteLength);
     return new Uint8Array(arrayBuffer);
-  } catch (e) {
-    console.error('[DEBUG api.ts] getSessionPdf error:', e);
+  } catch (error) {
+    console.error('Failed to get session PDF:', error);
     return null;
   }
 }
 
 export async function getSessionOriginalPdf(sessionId: string): Promise<Uint8Array | null> {
-  console.log('[DEBUG api.ts] getSessionOriginalPdf called for:', sessionId);
   try {
     const response = await fetch(`${API_BASE}/session/${sessionId}/original-pdf`);
-    console.log('[DEBUG api.ts] getSessionOriginalPdf response:', { ok: response.ok, status: response.status });
     if (!response.ok) {
       return null;
     }
     const arrayBuffer = await response.arrayBuffer();
-    console.log('[DEBUG api.ts] getSessionOriginalPdf got bytes:', arrayBuffer.byteLength);
     return new Uint8Array(arrayBuffer);
-  } catch (e) {
-    console.error('[DEBUG api.ts] getSessionOriginalPdf error:', e);
+  } catch (error) {
+    console.error('Failed to get session original PDF:', error);
     return null;
   }
 }
@@ -215,27 +261,31 @@ export async function getSessionOriginalPdf(sessionId: string): Promise<Uint8Arr
 
 export interface ParsedContextFile {
   filename: string;
-  content: string;
-  was_parsed: boolean;
-  error?: string | null;
+  document_id: string;
 }
 
 export interface ParseFilesProgress {
-  type: 'start' | 'progress' | 'complete' | 'error' | 'init';
+  type: 'start' | 'progress' | 'complete' | 'error' | 'init' | 'system_message';
   total?: number;
   current?: number;
   filename?: string;
   status?: 'parsing' | 'reading_text' | 'docling' | 'complete' | 'error';
   error?: string;
   message?: string;
+  document_id?: string;
   results?: Array<{
     filename: string;
-    content: string | null;
-    parsed: boolean;
-    error: string | null;
+    document_id?: string;
+    success?: boolean;
+    error?: string;
   }>;
   success_count?: number;
   error_count?: number;
+  count?: number;
+  storage_type?: string;
+  content?: string;
+  role?: 'system' | 'user' | 'assistant';
+  timestamp?: string;
 }
 
 export async function* streamParseFiles(
@@ -247,6 +297,7 @@ export async function* streamParseFiles(
   for (const file of files) {
     formData.append('files', file);
   }
+  formData.append('is_ephemeral', 'true');
 
   if (userSessionId) {
     formData.append('user_session_id', userSessionId);
@@ -308,17 +359,4 @@ export async function getParseStatus(): Promise<{
     throw new Error('Failed to get parse status');
   }
   return response.json();
-}
-
-export async function getSessionContextFiles(sessionId: string): Promise<ParsedContextFile[] | null> {
-  try {
-    const response = await fetch(`${API_BASE}/session/${sessionId}/context-files`);
-    if (!response.ok) {
-      return null;
-    }
-    const data = await response.json();
-    return data.context_files;
-  } catch {
-    return null;
-  }
 }
