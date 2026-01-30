@@ -4,8 +4,7 @@ import { useCallback, useState } from 'react';
 
 export interface ContextFile {
   filename: string;
-  content: string;
-  was_parsed: boolean;
+  document_id: string;
 }
 
 export interface ParseProgress {
@@ -19,7 +18,7 @@ export interface ParseProgress {
 interface ContextFilesUploadProps {
   files: ContextFile[];
   onFilesChange: (files: ContextFile[]) => void;
-  onParseFiles: (files: File[], parseMode: 'cost_effective' | 'agentic_plus') => Promise<void>;
+  onParseFiles: (files: File[]) => Promise<void>;
   isUploading: boolean;
   parseProgress: ParseProgress | null;
   disabled?: boolean;
@@ -36,7 +35,6 @@ export default function ContextFilesUpload({
   maxFiles = 10,
 }: ContextFilesUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
-  const [parseMode, setParseMode] = useState<'cost_effective' | 'agentic_plus'>('cost_effective');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -90,9 +88,9 @@ export default function ContextFilesUpload({
   const handleUpload = useCallback(async () => {
     if (pendingFiles.length === 0 || isUploading) return;
 
-    await onParseFiles(pendingFiles, parseMode);
+    await onParseFiles(pendingFiles);
     setPendingFiles([]);
-  }, [pendingFiles, parseMode, isUploading, onParseFiles]);
+  }, [pendingFiles, isUploading, onParseFiles]);
 
   const totalCount = files.length + pendingFiles.length;
   const canAddMore = totalCount < maxFiles;
@@ -231,9 +229,6 @@ export default function ContextFilesUpload({
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
                 <span className="text-xs text-foreground-secondary truncate">{file.filename}</span>
-                {file.was_parsed && (
-                  <span className="text-xs text-foreground-muted">(parsed)</span>
-                )}
               </div>
               <button
                 onClick={() => handleRemoveUploaded(index)}
