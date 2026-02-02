@@ -3,7 +3,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { ChatMessage as ChatMessageType } from '@/types';
 import ChatMessage from './ChatMessage';
-import ContextFilesUpload, { ContextFile, ParseProgress } from './ContextFilesUpload';
+import ContextFilesUpload, { ContextFile } from './ContextFilesUpload';
+import { ParseProgress } from './FileUploadZone';
 
 interface ChatPanelProps {
   messages: ChatMessageType[];

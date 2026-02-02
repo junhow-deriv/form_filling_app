@@ -3,7 +3,8 @@
 import { useState, useCallback, useEffect } from 'react';
 import { ChatMessage, FormField, PdfDisplayMode, StreamEvent, AgentLogEntry } from '@/types';
 import { analyzePdf, streamAgentFill, hexToBytes, streamParseFiles, getSessionInfo, getSessionPdf, getSessionOriginalPdf } from '@/lib/api';
-import { ContextFile, ParseProgress } from '@/components/ContextFilesUpload';
+import { ContextFile } from '@/components/ContextFilesUpload';
+import { ParseProgress } from '@/components/FileUploadZone';
 import {
   createMessage,
   getSessionIdFromUrl,
@@ -11,6 +12,7 @@ import {
 } from '@/lib/session';
 import LeftPanel from '@/components/LeftPanel';
 import ChatPanel from '@/components/ChatPanel';
+import KnowledgeBaseManager from '@/components/KnowledgeBaseManager';
 // Helper to generate unique IDs
 const generateId = () => crypto.randomUUID();
 
@@ -40,6 +42,8 @@ export default function Home() {
   const [parseProgress, setParseProgress] = useState<ParseProgress | null>(null);
   // Track if first agent turn was successful (for continuation logic)
   const [hasSuccessfulFirstTurn, setHasSuccessfulFirstTurn] = useState(false);
+  // Knowledge Base Manager modal state
+  const [isKBManagerOpen, setIsKBManagerOpen] = useState(false);
 
   // Initialize session from URL or create new one
   useEffect(() => {
@@ -434,18 +438,18 @@ export default function Home() {
       {/* Header */}
       <header className="flex-shrink-0 px-6 py-3 border-b border-border flex items-center justify-end">
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => setIsKBManagerOpen(true)}
+            className="flex items-center gap-1 text-xs text-foreground-muted hover:text-accent transition-colors"
+          >
+            <span>📚</span>
+            <span>Knowledge Base</span>
+          </button>
           {sessionId && (
             <div className="text-xs text-foreground-muted">
               Session: {sessionId.slice(0, 8)}...
             </div>
           )}
-          <a
-            href="/docs"
-            target="_blank"
-            className="text-xs text-foreground-muted hover:text-accent transition-colors"
-          >
-            API Docs
-          </a>
         </div>
       </header>
 
@@ -484,6 +488,12 @@ export default function Home() {
           />
         </div>
       </main>
+
+      {/* Knowledge Base Manager Modal */}
+      <KnowledgeBaseManager
+        isOpen={isKBManagerOpen}
+        onClose={() => setIsKBManagerOpen(false)}
+      />
     </div>
   );
 }
