@@ -756,6 +756,7 @@ When continuing from a previous session:
 ## Rules:
 - For dropdowns, use exact option values
 - For checkboxes, use "true" or "false"
+- If the value for a field cannot be found or determined, leave the field empty
 - Always review with get_pending_edits before committing
 - ALWAYS use parallel tool calls when setting multiple fields
 - When continuing, preserve existing values unless explicitly asked to change them
