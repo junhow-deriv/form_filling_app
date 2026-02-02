@@ -1139,6 +1139,107 @@ async def get_parse_status():
     }
 
 
+# ============================================================================
+# Knowledge Base Management Endpoints
+# ============================================================================
+
+@app.get("/knowledge-base/documents")
+async def list_knowledge_base_documents():
+    """
+    List all knowledge base documents for a user.
+    
+    Returns documents where session_id IS NULL (global KB).
+    These are permanent reference documents not tied to any specific session.
+    """
+    # Use default test user for development (TODO: get from auth)
+    user_id = "00000000-0000-0000-0000-000000000001"
+    
+    from database.supabase_client import get_client_for_user
+    
+    try:
+        client = get_client_for_user(user_id)
+        result = client.table("documents")\
+            .select("id, filename, created_at, metadata")\
+            .eq("user_id", user_id)\
+            .is_("session_id", "null")\
+            .order("created_at", desc=True)\
+            .execute()
+        
+        return {"documents": result.data or []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch documents: {str(e)}")
+
+
+@app.delete("/knowledge-base/documents/{document_id}")
+async def delete_knowledge_base_document(document_id: str):
+    """
+    Delete a knowledge base document and its chunks.
+    
+    Only deletes if session_id IS NULL (safety check to prevent deletion of ephemeral docs).
+    Cascades deletion to document_chunks table.
+    
+    Args:
+        document_id: UUID of the document to delete
+    
+    Returns:
+        Success message
+    """
+    # Use default test user for development (TODO: get from auth)
+    user_id = "00000000-0000-0000-0000-000000000001"
+    
+    from database.supabase_client import get_client_for_user
+    
+    try:
+        client = get_client_for_user(user_id)
+        
+        # Verify document exists and belongs to user's KB (not ephemeral)
+        doc_result = client.table("documents")\
+            .select("id, session_id, filename")\
+            .eq("id", document_id)\
+            .eq("user_id", user_id)\
+            .execute()
+        
+        if not doc_result.data:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        doc = doc_result.data[0]
+        
+        # Safety check: only allow deletion of KB documents (session_id IS NULL)
+        if doc["session_id"] is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete ephemeral documents via KB endpoint. Use session cleanup instead."
+            )
+        
+        print(f"[KB Delete] Deleting KB document: {doc['filename']} ({document_id})")
+        
+        # Delete chunks first (foreign key constraint)
+        chunks_result = client.table("document_chunks")\
+            .delete()\
+            .eq("document_id", document_id)\
+            .execute()
+        
+        print(f"[KB Delete] Deleted {len(chunks_result.data or [])} chunks")
+        
+        # Delete document
+        client.table("documents")\
+            .delete()\
+            .eq("id", document_id)\
+            .execute()
+        
+        print(f"[KB Delete] Document deleted successfully")
+        
+        return {
+            "success": True,
+            "message": f"Document '{doc['filename']}' deleted from knowledge base"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
+
+
 @app.post("/validate-anthropic-key")
 async def validate_anthropic_key(api_key: str = Form(...)):
     """
