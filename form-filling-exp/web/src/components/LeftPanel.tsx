@@ -30,19 +30,23 @@ export default function LeftPanel({
   isAnalyzing,
   isProcessing,
 }: LeftPanelProps) {
-
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-        <div>
-          <h2 className="text-sm font-semibold">Form</h2>
-          <p className="text-xs text-foreground-muted">
-            {file ? file.name : 'Upload and preview your PDF'}
-          </p>
+        <div className="flex items-center gap-4">
+          <div>
+            <h2 className="text-sm font-semibold">Form</h2>
+            <p className="text-xs text-foreground-muted">
+              {file ? file.name : 'Upload and preview your PDF'}
+            </p>
+          </div>
         </div>
+        
+        {/* New Form Button - Right side */}
         {file && (
           <button
+            type="button"
             onClick={onNewForm}
             disabled={isProcessing}
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md bg-background-tertiary text-foreground-muted hover:text-foreground-secondary hover:bg-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"

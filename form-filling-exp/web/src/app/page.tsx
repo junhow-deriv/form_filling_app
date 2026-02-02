@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { ChatMessage, FormField, PdfDisplayMode, StreamEvent, AgentLogEntry } from '@/types';
-import { analyzePdf, streamAgentFill, hexToBytes, streamParseFiles, getSessionInfo, getSessionPdf, getSessionOriginalPdf } from '@/lib/api';
+import { analyzePdf, streamAgentFill, hexToBytes, streamParseFiles, getSessionInfo, getSessionPdf, getSessionOriginalPdf, detectFields, downloadPdf } from '@/lib/api';
 import { ContextFile } from '@/components/ContextFilesUpload';
 import { ParseProgress } from '@/components/FileUploadZone';
 import {
@@ -44,6 +44,11 @@ export default function Home() {
   const [hasSuccessfulFirstTurn, setHasSuccessfulFirstTurn] = useState(false);
   // Knowledge Base Manager modal state
   const [isKBManagerOpen, setIsKBManagerOpen] = useState(false);
+  
+  // Detect Fields state (for header button)
+  const detectFieldsInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFileForDetection, setSelectedFileForDetection] = useState<File | null>(null);
+  const [isDetecting, setIsDetecting] = useState(false);
 
   // Initialize session from URL or create new one
   useEffect(() => {
@@ -132,6 +137,49 @@ export default function Home() {
   const handleNewForm = useCallback(() => {
     const newSessionId = generateId();
     window.location.href = `/?session=${newSessionId}`;
+  }, []);
+
+  // Handle Detect Fields button click
+  const handleDetectFieldsClick = useCallback(async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (selectedFileForDetection) {
+      // File is selected - run detection
+      setIsDetecting(true);
+      try {
+        console.log('Running field detection on:', selectedFileForDetection.name);
+        const pdfBytes = await detectFields(selectedFileForDetection);
+        
+        // Automatically download the interactive PDF
+        const filename = selectedFileForDetection.name.replace('.pdf', '_interactive.pdf');
+        downloadPdf(pdfBytes, filename);
+        
+        console.log('Field detection completed! Interactive PDF downloaded.');
+        // Clear selection after successful detection
+        setSelectedFileForDetection(null);
+      } catch (error) {
+        console.error('Field detection error:', error);
+        alert(`Error: ${error instanceof Error ? error.message : 'Failed to detect fields'}`);
+      } finally {
+        setIsDetecting(false);
+      }
+    } else {
+      // No file selected - open file picker
+      detectFieldsInputRef.current?.click();
+    }
+  }, [selectedFileForDetection]);
+
+  // Handle file input change for Detect Fields
+  const handleDetectFieldsFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.length) {
+      const selectedFile = e.target.files[0];
+      setSelectedFileForDetection(selectedFile);
+      console.log('File selected for field detection:', selectedFile.name);
+      
+      // Reset the input so the same file can be selected again if needed
+      e.target.value = '';
+    }
   }, []);
 
   // Handle file selection and analysis
@@ -435,9 +483,54 @@ export default function Home() {
 
   return (
     <div className="h-screen flex flex-col bg-background">
+      {/* Hidden file input for Detect Fields */}
+      <input
+        ref={detectFieldsInputRef}
+        type="file"
+        accept="application/pdf"
+        onChange={handleDetectFieldsFileChange}
+        className="hidden"
+      />
+
       {/* Header */}
       <header className="flex-shrink-0 px-6 py-3 border-b border-border flex items-center justify-end">
         <div className="flex items-center gap-4">
+          {/* Detect Fields Button */}
+          <button
+            type="button"
+            onClick={handleDetectFieldsClick}
+            disabled={isDetecting}
+            className="flex items-center gap-1 text-xs text-foreground-muted hover:text-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isDetecting ? (
+              <>
+                <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                <span>Detecting...</span>
+              </>
+            ) : (
+              <>
+                <span>🔍</span>
+                <span>{selectedFileForDetection ? 'Run Detection' : 'Detect Fields'}</span>
+              </>
+            )}
+          </button>
+          
+          {/* Selected file indicator for Detect Fields */}
+          {selectedFileForDetection && (
+            <div className="flex items-center gap-2 px-2 py-1 text-xs bg-background-tertiary rounded-md border border-border">
+              <span className="text-foreground-secondary truncate max-w-[120px]">{selectedFileForDetection.name}</span>
+              <button
+                type="button"
+                onClick={() => setSelectedFileForDetection(null)}
+                className="text-foreground-muted hover:text-foreground-secondary"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          )}
+          
           <button
             onClick={() => setIsKBManagerOpen(true)}
             className="flex items-center gap-1 text-xs text-foreground-muted hover:text-accent transition-colors"

@@ -21,6 +21,7 @@ import os
 import time
 from pathlib import Path
 from typing import Literal, Optional
+import tempfile
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
@@ -43,6 +44,7 @@ from services.embedding_service import (
     waterfall_search,
     assemble_waterfall_context
 )
+from services.field_detector import process_pdf_async
 
 
 # ============================================================================
@@ -1305,6 +1307,75 @@ async def validate_anthropic_key(api_key: str = Form(...)):
         )
 
 # ============================================================================
+# Detect Fields Endpoints
+# ============================================================================
+
+@app.post("/detect-fields")
+async def detect_fields_endpoint(file: UploadFile = File(...)):
+    """
+    Process an uploaded PDF and return the interactive PDF with form fields.
+    
+    - **file**: PDF file to process
+    - **Returns**: Interactive PDF with AcroForm fields (text fields, checkboxes)
+    """
+    # Validate file type
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(
+            status_code=400, 
+            detail="Only PDF files are accepted"
+        )
+    
+    print(f"Received file: {file.filename}")
+    
+    # Save uploaded file to temporary location
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+    
+    print(f"Saved to temporary file: {tmp_path}")
+    
+    try:
+        # Process the PDF (creates LLM client on-demand)
+        print("Starting PDF processing...")
+        interactive_pdf_path = await process_pdf_async(
+            pdf_path=tmp_path,
+            output_dir="output/"
+        )
+        
+        # Read the generated interactive PDF
+        with open(interactive_pdf_path, 'rb') as f:
+            pdf_bytes = f.read()
+        
+        # Get filename for response
+        original_name = os.path.splitext(file.filename)[0]
+        
+        print(f"Returning interactive PDF: {original_name}_interactive.pdf")
+        
+        # Return PDF directly
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"inline; filename={original_name}_interactive.pdf"
+            }
+        )
+        
+    except ValueError as e:
+        print(f"ValueError: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        print(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+    finally:
+        # Cleanup temporary uploaded file
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+            print(f"Cleaned up temporary file: {tmp_path}")
+
+
+
+# ============================================================================
 # Run directly for development
 # ============================================================================
 
@@ -1321,6 +1392,7 @@ if __name__ == "__main__":
     print("\nLegacy Endpoints (deprecated):")
     print("  POST /fill               - Fill (single-shot LLM mode)")
     print("  POST /fill-preview       - Preview single-shot mode")
+    print("  POST /detect-fields      - Detect form fields in a PDF")
     print("\nOther:")
     print("  GET  /docs               - API documentation (Swagger UI)")
     print("\nWeb UI: http://localhost:8000")
