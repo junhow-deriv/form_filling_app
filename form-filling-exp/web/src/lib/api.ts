@@ -6,23 +6,6 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 // API Key Validation
 // ============================================================================
 
-export async function validateAnthropicApiKey(apiKey: string): Promise<{ valid: boolean; message: string }> {
-  const formData = new FormData();
-  formData.append('api_key', apiKey);
-
-  const response = await fetch(`${API_BASE}/validate-anthropic-key`, {
-    method: 'POST',
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Failed to validate API key' }));
-    throw new Error(error.detail || 'Failed to validate API key');
-  }
-
-  return response.json();
-}
-
 export async function* analyzePdf(file: File, sessionId: string): AsyncGenerator<StreamEvent> {
   const formData = new FormData();
   formData.append('file', file);
@@ -290,14 +273,15 @@ export interface ParseFilesProgress {
 
 export async function* streamParseFiles(
   files: File[],
-  userSessionId?: string | null
+  userSessionId?: string | null,
+  isEphemeral: boolean = true
 ): AsyncGenerator<ParseFilesProgress> {
   const formData = new FormData();
 
   for (const file of files) {
     formData.append('files', file);
   }
-  formData.append('is_ephemeral', 'true');
+  formData.append('is_ephemeral', String(isEphemeral));
 
   if (userSessionId) {
     formData.append('user_session_id', userSessionId);
@@ -382,4 +366,35 @@ export async function detectFields(file: File): Promise<Uint8Array> {
   // The endpoint returns PDF bytes directly
   const arrayBuffer = await response.arrayBuffer();
   return new Uint8Array(arrayBuffer);
+
+// ============================================================================
+// Knowledge Base Management
+// ============================================================================
+
+export interface KnowledgeBaseDocument {
+  id: string;
+  filename: string;
+  created_at: string;
+  metadata?: Record<string, unknown>;
+}
+
+export async function getKnowledgeBaseDocuments(): Promise<{
+  documents: KnowledgeBaseDocument[];
+}> {
+  const response = await fetch(`${API_BASE}/knowledge-base/documents`);
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Failed to fetch knowledge base documents' }));
+    throw new Error(error.detail || 'Failed to fetch knowledge base documents');
+  }
+  return response.json();
+}
+
+export async function deleteKnowledgeBaseDocument(documentId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/knowledge-base/documents/${documentId}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Failed to delete document' }));
+    throw new Error(error.detail || 'Failed to delete document');
+  }
 }
