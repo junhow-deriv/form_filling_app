@@ -360,3 +360,26 @@ export async function getParseStatus(): Promise<{
   }
   return response.json();
 }
+
+// ============================================================================
+// Field Detection
+// ============================================================================
+
+export async function detectFields(file: File): Promise<Uint8Array> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_BASE}/detect-fields`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Failed to detect fields' }));
+    throw new Error(error.detail || 'Failed to detect fields');
+  }
+
+  // The endpoint returns PDF bytes directly
+  const arrayBuffer = await response.arrayBuffer();
+  return new Uint8Array(arrayBuffer);
+}

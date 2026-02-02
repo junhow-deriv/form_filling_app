@@ -15,7 +15,8 @@ import numpy as np
 from PIL import Image
 from io import BytesIO
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -304,26 +305,24 @@ def image_to_base64(image):
 
 def create_llm_client():
     """
-    Create and configure the LLM client from environment variables.
+    Create and configure the Google GenAI client from environment variables.
     
     Returns:
-        tuple: (client, model_name) or (None, None) if credentials are missing
+        tuple: (client, model_name)
         
     Raises:
         ValueError: If required environment variables are not set
     """
     api_key = os.getenv("GOOGLE_API_KEY")
-    base_url = os.getenv("GOOGLE_API_BASE_URL")
     model_name = os.getenv("MODEL")
     
     if not api_key:
         raise ValueError("Missing GOOGLE_API_KEY environment variable")
-    if not base_url:
-        raise ValueError("Missing GOOGLE_API_BASE_URL environment variable")
     if not model_name:
         raise ValueError("Missing MODEL environment variable")
     
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    # Create Google GenAI client
+    client = genai.Client(api_key=api_key)
     return client, model_name
 
 
@@ -336,7 +335,7 @@ def parse_pdf_coordinates_with_filter(pdf_path, page_num=0, output_prefix=None, 
         pdf_path: Path to the PDF file
         page_num: Page number to process (0-indexed)
         output_prefix: Prefix for the filtered image filename (e.g., "document_page_0")
-        client: OpenAI client instance (optional, will create if not provided)
+        client: Google GenAI client instance (optional, will create if not provided)
         model_name: Model name to use (optional, will get from env if not provided)
     """
     # Create client if not provided
@@ -409,24 +408,27 @@ def parse_pdf_coordinates_with_filter(pdf_path, page_num=0, output_prefix=None, 
 
     try:
         print(f"Sending filtered image to model: {model_name}")
-        response = client.chat.completions.create(
+        
+        # Convert base64 image to bytes for Google SDK
+        image_bytes = base64.b64decode(base64_image)
+        
+        # Create content parts for Google GenAI
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=prompt),
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+                ]
+            )
+        ]
+        
+        # Call Google GenAI API
+        response = client.models.generate_content(
             model=model_name,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
-            ]
+            contents=contents
         )
-        content = response.choices[0].message.content
+        content = response.text
         print("\nResponse from Gemini (Coordinates):")
         print("-" * 20)
         print(content)
@@ -587,7 +589,7 @@ def process_pdf_sync(
     Args:
         pdf_path: Path to the PDF file
         output_dir: Directory to save output files
-        client: OpenAI client instance
+        client: Google GenAI client instance
         model_name: Model name to use
         
     Returns:

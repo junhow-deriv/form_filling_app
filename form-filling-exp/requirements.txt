@@ -28,6 +28,9 @@ supabase
 # OpenAI for embeddings
 openai
 
+# Google GenAI SDK for Gemini models (field detection)
+google-genai==1.61.0
+
 # Environment variables
 python-dotenv
 
