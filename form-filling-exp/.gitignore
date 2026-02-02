@@ -52,7 +52,7 @@ yarn-error.log*
 backend/sessions.db
 backend/sessions_data/
 *.db
-backend/output
+output/
 
 # Temp files
 *.tmp
