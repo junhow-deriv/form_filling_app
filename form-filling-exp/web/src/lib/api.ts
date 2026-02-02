@@ -366,6 +366,7 @@ export async function detectFields(file: File): Promise<Uint8Array> {
   // The endpoint returns PDF bytes directly
   const arrayBuffer = await response.arrayBuffer();
   return new Uint8Array(arrayBuffer);
+}
 
 // ============================================================================
 // Knowledge Base Management
