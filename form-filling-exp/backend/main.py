@@ -109,17 +109,17 @@ app.add_middleware(
 # Helper Functions
 # ============================================================================
 
-async def check_user_has_documents(user_id: str, session_id: str) -> bool:
+async def check_user_has_documents(user_id: str, session_id: Optional[str] = None) -> bool:
     """
     Check if user has any documents (ephemeral or global KB).
     
     Returns True if:
-    - User has ephemeral docs for this session_id, OR
+    - User has ephemeral docs for this session_id (if valid UUID provided), OR
     - User has documents in global knowledge base
     
     Args:
         user_id: User UUID
-        session_id: Session UUID for ephemeral docs
+        session_id: Optional session UUID for ephemeral docs (must be valid UUID or None)
         
     Returns:
         True if user has any documents, False otherwise
@@ -129,13 +129,14 @@ async def check_user_has_documents(user_id: str, session_id: str) -> bool:
     try:
         client = get_client_for_user(user_id)
         
-        # Check ephemeral docs for this session
-        ephemeral = client.table("documents").select("id").eq("user_id", user_id).eq("session_id", session_id).limit(1).execute()
-        if ephemeral.data:
-            print(f"[HasDocs] User {user_id} has ephemeral docs for session {session_id}")
-            return True
+        # Check ephemeral docs for this session (only if valid session_id provided)
+        if session_id:
+            ephemeral = client.table("documents").select("id").eq("user_id", user_id).eq("session_id", session_id).limit(1).execute()
+            if ephemeral.data:
+                print(f"[HasDocs] User {user_id} has ephemeral docs for session {session_id}")
+                return True
         
-        # Check global KB (session_id IS NULL)
+        # Always check global KB (session_id IS NULL)
         kb_docs = client.table("documents").select("id").eq("user_id", user_id).is_("session_id", "null").limit(1).execute()
         if kb_docs.data:
             print(f"[HasDocs] User {user_id} has global KB documents")

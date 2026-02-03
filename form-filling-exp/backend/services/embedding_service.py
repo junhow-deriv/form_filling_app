@@ -233,7 +233,41 @@ async def store_document(
     existing = existing.execute()
     if existing.data:
         doc_id = existing.data[0]["id"]
-        print(f"[Store] Document already exists: {doc_id}")
+        old_session_id = existing.data[0].get("session_id")
+        existing_raw_text = existing.data[0].get("raw_text", "")
+        
+        # If session_id changed, update the document and its chunks to use the new session
+        if session_id != old_session_id:
+            client.table("documents").update({"session_id": session_id}).eq("id", doc_id).execute()
+            client.table("document_chunks").update({"session_id": session_id}).eq("document_id", doc_id).execute()
+            print(f"[Store] Document already exists: {doc_id}, updated session_id: {old_session_id} -> {session_id}")
+        
+        # Check if chunks exist - if not, create them
+        existing_chunks = client.table("document_chunks").select("id").eq("document_id", doc_id).limit(1).execute()
+        if not existing_chunks.data:
+            print(f"[Store] Document {doc_id} exists but has NO chunks - creating chunks now...")
+            chunks = await chunk_document(existing_raw_text, filename)
+            if chunks:
+                chunk_texts = [chunk["text"] for chunk in chunks]
+                embeddings = await generate_embeddings(chunk_texts)
+                chunk_records = []
+                for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                    chunk_records.append({
+                        "document_id": doc_id,
+                        "session_id": session_id,
+                        "chunk_index": i,
+                        "chunk_text": chunk["text"],
+                        "chunk_size": len(chunk["text"]),
+                        "embedding": embedding,
+                        "metadata": chunk.get("metadata", {})
+                    })
+                client.table("document_chunks").insert(chunk_records).execute()
+                print(f"[Store] Created {len(chunk_records)} chunks for existing document {doc_id}")
+            else:
+                print(f"[Store] No chunks created - raw_text may be empty")
+        else:
+            print(f"[Store] Document already exists with chunks: {doc_id}")
+        
         return doc_id
     
     # Extract text (TODO: teammate will implement)
@@ -449,12 +483,17 @@ async def waterfall_search(
             user_id, session_id, query,
             top_k=1, similarity_threshold=similarity_threshold
         )
+   
         
         results[field_id] = {
             "result": result,
             "source": result["source"] if result else "none",
             "query_used": query
         }
+        print(f'[Waterfall] Ephemeral result for {field_id}: {len(result) if result else 0} chars')
+        print(f'[Waterfall] Ephemeral result {results[field_id]["query_used"]}')
+        print(f'[Waterfall] Ephemeral result {results[field_id]["source"]}')
+        
     
     # Process knowledge base queries (global KB)
     for query_info in field_queries.get("knowledge_base_queries", []):
@@ -465,12 +504,13 @@ async def waterfall_search(
             user_id, query,
             top_k=1, similarity_threshold=similarity_threshold
         )
-        
+       
         results[field_id] = {
             "result": result,
             "source": result["source"] if result else "none",
             "query_used": query
         }
+        print(f'[Waterfall] KB result for {field_id}: {len(result) if result else 0} chars')
     
     # Log summary
     ephemeral_count = sum(1 for v in results.values() if v["source"] == "ephemeral")
@@ -625,6 +665,11 @@ async def get_knowledge_base_stats(user_id: str) -> dict:
 
 
 if __name__ == "__main__":
+    # Add parent directory to path for standalone testing
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    
     # Quick test
     import asyncio
     
@@ -644,5 +689,11 @@ if __name__ == "__main__":
         chunks = await chunk_document(test_text_2, "test_doc.txt", chunk_size=100, overlap=50)
         print(f"Created {len(chunks)} chunks")
         print(chunks)
+
+        result = await search_ephemeral_docs(
+            user_id="00000000-0000-0000-0000-000000000001",
+            session_id="f7925623-b3ea-4a9f-a9d0-6d5c8daeb900",
+            query="long document")
+        print('RESULTTTTTT',result)
 
     asyncio.run(test())
